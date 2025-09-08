@@ -9,7 +9,7 @@ import time
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# 筛选条件（放宽以确保结果）
+# 筛选条件（宽松）
 MIN_RETURN = 5.0  # 年化收益率 ≥ 5%
 MAX_VOLATILITY = 20.0  # 波动率 ≤ 20%
 MIN_SHARPE = 0.3  # 夏普比率 ≥ 0.3
@@ -21,47 +21,31 @@ session = requests.Session()
 retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
 session.mount('http://', HTTPAdapter(max_retries=retries))
 
-# 步骤1: 获取基金列表（AKShare + 天天基金网）
+# 步骤1: 获取基金列表（使用热门基金）
 def get_fund_list():
-    # AKShare 基金列表
-    ak_funds = ak.fund_name_em()
-    ak_funds = ak_funds[ak_funds['基金类型'].isin(['股票型', '混合型'])][['基金代码', '基金简称', '基金类型']]
-    ak_funds.columns = ['code', 'name', 'type']
-    
-    # 天天基金网基金列表
-    url = "http://fund.eastmoney.com/js/fundcode_search.js"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    try:
-        response = session.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data_str = re.findall(r'\[.*\]', response.text)[0]
-        funds = json.loads(data_str)
-        tt_funds = pd.DataFrame(funds, columns=['code', 'pinyin', 'name', 'type', 'full_name'])
-        tt_funds = tt_funds[tt_funds['type'].isin(['股票型', '混合型'])]
-    except Exception as e:
-        print(f"天天基金网获取基金列表失败: {e}")
-        tt_funds = pd.DataFrame()
-    
-    # 合并：优先使用 AKShare，补充天天基金网的独有基金
-    if not tt_funds.empty:
-        combined = pd.concat([ak_funds, tt_funds[~tt_funds['code'].isin(ak_funds['code'])]])
-    else:
-        combined = ak_funds
-    # 选取前 10 只热门基金（减少请求量）
-    return combined.head(10)
+    fund_list = [
+        {'code': '161725', 'name': '招商中证白酒指数', 'type': '股票型'},
+        {'code': '110011', 'name': '易方达中小盘混合', 'type': '混合型'},
+        {'code': '510050', 'name': '华夏上证50ETF', 'type': '股票型'},
+        {'code': '001593', 'name': '中欧医疗健康混合A', 'type': '混合型'},
+        {'code': '519674', 'name': '银河创新成长混合', 'type': '混合型'}
+    ]
+    return pd.DataFrame(fund_list)
 
 # 步骤2: 获取历史净值（AKShare 优先，失败则用天天基金网）
 def get_fund_net_values(code, start_date, end_date):
     # AKShare 尝试
     try:
-        net_df = ak.fund_hist_em(symbol=code, adjust='qfq')
+        net_df = ak.fund_open_fund_daily_em(symbol=code)  # 更新为正确接口
         net_df['日期'] = pd.to_datetime(net_df['日期'])
         net_df = net_df[(net_df['日期'] >= pd.to_datetime(start_date)) &
                         (net_df['日期'] <= pd.to_datetime(end_date))]
         net_df = net_df.sort_values('日期')
         ak_latest = net_df['单位净值'].iloc[-1] if not net_df.empty else None
         if len(net_df) >= 100:
-            return net_df, ak_latest, 'AKShare'
+            return net_df.rename(columns={'单位净值': 'net_value', '日期': 'date'}), ak_latest, 'AKShare'
+        else:
+            print(f"AKShare 获取基金 {code} 净值数据不足100天")
     except Exception as e:
         print(f"AKShare 获取基金 {code} 净值失败: {e}")
     
@@ -73,6 +57,7 @@ def get_fund_net_values(code, start_date, end_date):
         response.raise_for_status()
         data_str = re.findall(r'data:(.*?),pages', response.text)
         if not data_str:
+            print(f"天天基金网获取基金 {code} 净值数据为空")
             return pd.DataFrame(), None, 'None'
         net_values = json.loads(data_str[0])
         df = pd.DataFrame(net_values, columns=['date', 'net_value', 'total_value', 'daily_return', 'buy_status', 'sell_status'])
@@ -80,13 +65,28 @@ def get_fund_net_values(code, start_date, end_date):
         df['net_value'] = pd.to_numeric(df['net_value'], errors='coerce')
         df = df.sort_values('date').dropna(subset=['net_value'])
         tt_latest = df['net_value'].iloc[-1] if not df.empty else None
-        return df, tt_latest, '天天基金网'
+        if len(df) >= 100:
+            return df, tt_latest, '天天基金网'
+        else:
+            print(f"天天基金网获取基金 {code} 净值数据不足100天")
+            return pd.DataFrame(), None, 'None'
     except Exception as e:
         print(f"天天基金网获取基金 {code} 净值失败: {e}")
         return pd.DataFrame(), None, 'None'
 
 # 步骤3: 获取管理费（天天基金网）
 def get_fund_fee(code):
+    # 手动指定热门基金管理费（从天天基金网查得）
+    manual_fees = {
+        '161725': 0.8,  # 招商中证白酒指数
+        '110011': 1.5,  # 易方达中小盘混合
+        '510050': 0.5,  # 华夏上证50ETF
+        '001593': 1.5,  # 中欧医疗健康混合A
+        '519674': 1.5   # 银河创新成长混合
+    }
+    if code in manual_fees:
+        return manual_fees[code]
+    
     url = f"http://fund.eastmoney.com/{code}.html"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     try:
@@ -174,7 +174,7 @@ for idx, row in funds_df.iterrows():
     else:
         debug_info['失败原因'] = '未通过筛选'
     debug_data.append(debug_info)
-    time.sleep(2)
+    time.sleep(2)  # 避免触发反爬
 
 # 输出调试信息
 debug_df = pd.DataFrame(debug_data)

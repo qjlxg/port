@@ -279,7 +279,7 @@ def calculate_metrics(net_df, start_date, end_date):
 # 主函数
 def main():
     end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - timedelta(days=5 * 365)).strftime('%Y-%m-%d')  # 缩短到 5 年
+    start_date = (datetime.now() - timedelta(days=3 * 365)).strftime('%Y-%m-%d')  # 缩短到 3 年
 
     funds_df = get_fund_list()
     if funds_df.empty:

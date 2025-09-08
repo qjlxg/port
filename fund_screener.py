@@ -10,13 +10,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
-# 筛选条件（放宽）
+# 筛选条件（可根据你的需求进行调整）
 MIN_RETURN = 3.0  # 年化收益率 ≥ 3%
 MAX_VOLATILITY = 25.0  # 波动率 ≤ 25%
 MIN_SHARPE = 0.2  # 夏普比率 ≥ 0.2
 MAX_FEE = 2.5  # 管理费 ≤ 2.5%
 RISK_FREE_RATE = 3.0  # 无风险利率 3%
-MIN_DAYS = 100  # 最低数据天数（从 252 放宽到 100）
+MIN_DAYS = 100  # 最低数据天数
 
 # 配置 requests 重试机制
 session = requests.Session()
@@ -44,7 +44,15 @@ def get_fund_list():
         {'code': '519674', 'name': '银河创新成长混合', 'type': '混合型'},
         {'code': '501057', 'name': '汇添富中证新能源ETF', 'type': '股票型'},
         {'code': '005911', 'name': '广发双擎升级混合A', 'type': '混合型'},
-        {'code': '006751', 'name': '嘉实农业产业股票', 'type': '股票型'}
+        {'code': '006751', 'name': '嘉实农业产业股票', 'type': '股票型'},
+        {'code': '003095', 'name': '富国天惠精选成长混合', 'type': '混合型'},
+        {'code': '001103', 'name': '工银瑞信前沿医疗股票', 'type': '股票型'},
+        {'code': '005501', 'name': '中泰星元灵活配置混合', 'type': '混合型'},
+        {'code': '001607', 'name': '景顺长城新兴成长混合', 'type': '混合型'},
+        {'code': '003003', 'name': '兴全合润混合', 'type': '混合型'},
+        {'code': '005615', 'name': '东方红睿元三年定期混合', 'type': '混合型'},
+        {'code': '007300', 'name': '南方中证全指证券公司ETF', 'type': '股票型'},
+        {'code': '005827', 'name': '易方达蓝筹精选混合', 'type': '混合型'}
     ]
     return pd.DataFrame(fund_list)
 
@@ -206,14 +214,22 @@ def get_fund_fee(code):
     从 fund.eastmoney.com/pingzhongdata/ 接口获取管理费，带手动备用。
     """
     manual_fees = {
-        '161725': 0.8,  # 招商中证白酒指数
-        '110011': 1.5,  # 易方达中小盘混合
-        '510050': 0.5,  # 华夏上证50ETF
-        '001593': 1.5,  # 中欧医疗健康混合A
-        '519674': 1.5,  # 银河创新成长混合
-        '501057': 0.5,  # 汇添富中证新能源ETF
-        '005911': 1.5,  # 广发双擎升级混合A
-        '006751': 1.5   # 嘉实农业产业股票
+        '161725': 0.8,
+        '110011': 1.5,
+        '510050': 0.5,
+        '001593': 1.5,
+        '519674': 1.5,
+        '501057': 0.5,
+        '005911': 1.5,
+        '006751': 1.5,
+        '003095': 1.5,
+        '001103': 1.5,
+        '005501': 1.5,
+        '001607': 1.5,
+        '003003': 1.5,
+        '005615': 1.5,
+        '007300': 0.5,
+        '005827': 1.5
     }
     if code in manual_fees:
         print(f"基金 {code} 使用手动管理费: {manual_fees[code]}%")
@@ -241,7 +257,7 @@ def get_fund_fee(code):
         print(f"获取基金 {code} 管理费失败: {e}")
         return 1.5
 
-# 新增函数: 获取基金持仓信息
+# 步骤 5: 获取基金持仓信息
 def get_fund_holdings(code):
     """
     从天天基金网获取基金持仓信息。
@@ -259,11 +275,9 @@ def get_fund_holdings(code):
         soup = BeautifulSoup(response.text, 'html.parser')
         
         holdings = []
-        # 查找持仓表格
-        # 这段代码依赖于HTML结构，如果未来网页改版可能需要调整
         stock_table = soup.find('table', {'class': 'm-table'})
         if stock_table:
-            for row in stock_table.find_all('tr')[1:]: # 跳过表头
+            for row in stock_table.find_all('tr')[1:]:
                 cells = row.find_all('td')
                 if len(cells) >= 4:
                     holdings.append({
@@ -279,7 +293,7 @@ def get_fund_holdings(code):
         print(f"解析基金 {code} 持仓信息时出错: {e}")
         return []
 
-# 步骤 5: 计算指标
+# 步骤 6: 计算指标
 def calculate_metrics(net_df, start_date, end_date):
     """
     计算基金的年化收益率、波动率和夏普比率。
@@ -306,7 +320,7 @@ def calculate_metrics(net_df, start_date, end_date):
 # 主函数
 def main():
     end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - timedelta(days=3 * 365)).strftime('%Y-%m-%d')  # 缩短到 3 年
+    start_date = (datetime.now() - timedelta(days=3 * 365)).strftime('%Y-%m-%d')
 
     funds_df = get_fund_list()
     if funds_df.empty:
@@ -393,7 +407,7 @@ def main():
             debug_info['失败原因'] = '未通过筛选'
         debug_data.append(debug_info)
         print("-" * 50)
-        time.sleep(random.uniform(3, 7))  # 随机延时 3-7 秒
+        time.sleep(random.uniform(3, 7))
 
     # 保存调试信息
     debug_df = pd.DataFrame(debug_data)
@@ -423,7 +437,7 @@ def main():
                 print(f"\n--- 基金 {name} ({code}) 未能获取到持仓数据 ---")
             
             print("-" * 50)
-            time.sleep(random.uniform(2, 5)) # 随机延时 2-5 秒
+            time.sleep(random.uniform(2, 5))
             
     else:
         print("\n没有找到符合条件的基金，建议调整筛选条件。")

@@ -1,3 +1,0 @@
-﻿id,index_code,name,ttype,pe,pb,pe_percentile,pb_percentile,roe,yeild,ts,eva_type,eva_type_int,url,bond_yeild,begin_at,created_at,updated_at,pb_flag,source,date,pb_over_history,pe_over_history,peg
-493140,SZ399393,国证地产,3,0.0,0.8876,0.0,0.2092,0.0,0.0114,1757001600000,low,0,https://danjuanfunds.com/funding/160218?channel=1800100001&source=guzhi__web_20171001,0.05,1433174400000,1757068323756,1757068323756,True,5,09-05,0.7908,1.0,
-493102,SH000852,中证1000,1,45.9146,2.4347,0.7004,0.4764,0.053,0.0113,1757001600000,high,2,https://danjuanfunds.com/funding/003646?channel=1800100001&source=guzhi__web_20171001,0.05,1433174400000,1757068320951,1757068320951,False,5,09-05,0.5236,0.2996,1.0234

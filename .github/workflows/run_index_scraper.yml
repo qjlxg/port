@@ -1,0 +1,43 @@
+name: Run Index Scraper
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # 每天世界标准时间午夜运行
+  push:
+    branches:
+      - main 
+  # 删除了 paths 过滤器，这样任何推送到 main 分支的改动都会触发工作流
+  # 如果你只想让特定文件改动时运行，可以将其加回来并指定路径，例如：
+  # paths:
+  #   - 'index_valuation_scraper.py'
+  #   - '.github/workflows/run_index_scraper.yml'
+  workflow_dispatch: # 允许你手动从GitHub UI触发工作流
+
+jobs:
+  scrape_index_data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+          pip install beautifulsoup4 lxml
+
+      - name: Run Python script
+        run: python index_valuation_scraper.py
+
+      - name: Commit and Push changes
+        run: |
+          git config user.name 'github-actions'
+          git config user.email 'github-actions@github.com'
+          git add all_index_valuation.csv selected_funds.csv all_funds.csv funds_for_*.csv
+          git commit -m "Automated: Update index valuation data" || echo "No changes to commit"
+          git push

@@ -22,7 +22,7 @@ jobs:
     - name: Install dependencies # 步骤3: 安装所需的 Python 库
       run: |
         python -m pip install --upgrade pip
-        pip install pandas lxml html5lib beautifulsoup4
+        pip install pandas lxml html5lib beautifulsoup4 requests
        
 
     - name: Run fund screener script # 步骤4: 运行你的 Python 脚本

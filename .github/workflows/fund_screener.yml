@@ -21,7 +21,7 @@ jobs:
     - name: Install dependencies # 安装所需库
       run: |
         python -m pip install --upgrade pip
-        pip install akshare requests pandas numpy urllib3
+        pip install requests pandas numpy urllib3
 
     - name: Run fund screener script # 运行筛选脚本
       run: python fund_screener.py

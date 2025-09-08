@@ -24,19 +24,36 @@ session.mount('http://', HTTPAdapter(max_retries=retries))
 # --- 步骤 1: 获取基金列表 ---
 def get_fund_list():
     """
-    获取热门基金列表，覆盖多种类型。
+    动态获取天天基金所有基金的列表。
     """
-    fund_list = [
-        {'code': '161725', 'name': '招商中证白酒指数', 'type': '股票型'},
-        {'code': '110011', 'name': '易方达中小盘混合', 'type': '混合型'},
-        {'code': '510050', 'name': '华夏上证50ETF', 'type': '股票型'},
-        {'code': '001593', 'name': '中欧医疗健康混合A', 'type': '混合型'},
-        {'code': '519674', 'name': '银河创新成长混合', 'type': '混合型'},
-        {'code': '501057', 'name': '汇添富中证新能源ETF', 'type': '股票型'},
-        {'code': '005911', 'name': '广发双擎升级混合A', 'type': '混合型'},
-        {'code': '006751', 'name': '嘉实农业产业股票', 'type': '股票型'}
-    ]
-    return pd.DataFrame(fund_list)
+    print("尝试动态获取所有基金列表...")
+    url = "http://fund.eastmoney.com/js/fundcode_search.js"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    
+    try:
+        response = session.get(url, headers=headers, timeout=20)
+        response.raise_for_status()
+        
+        # 提取 JSON 字符串
+        match = re.search(r'var\s+r\s*=\s*(\[.*?\]);', response.text, re.DOTALL)
+        if match:
+            fund_data_str = match.group(1).replace("'", '"')
+            fund_data = json.loads(fund_data_str)
+            
+            # 将列表转换为 DataFrame
+            funds_df = pd.DataFrame(fund_data, columns=['code', 'pinyin', 'name', 'type', 'unknown'])
+            print(f"成功获取到 {len(funds_df)} 只基金的代码。")
+            
+            # 筛选出一些常见的基金类型进行后续处理
+            common_types = ['股票型', '混合型', '指数型', 'QDII', '债券型']
+            filtered_df = funds_df[funds_df['type'].isin(common_types)].head(200).copy() # 仅处理前200只，避免时间过长
+            return filtered_df
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"获取基金列表失败: {e}")
+        return pd.DataFrame()
 
 # --- 步骤 2: 获取历史净值（主备双重保险）---
 def get_fund_net_values(code):

@@ -8,6 +8,7 @@ import time
 import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from bs4 import BeautifulSoup
 
 # 筛选条件（放宽）
 MIN_RETURN = 3.0  # 年化收益率 ≥ 3%
@@ -33,7 +34,7 @@ USER_AGENTS = [
 # 步骤 1: 获取基金列表
 def get_fund_list():
     """
-    获取热门基金列表，并尝试从 selected_funds.csv 加载额外基金。
+    获取热门基金列表，覆盖多种类型。
     """
     fund_list = [
         {'code': '161725', 'name': '招商中证白酒指数', 'type': '股票型'},
@@ -45,30 +46,6 @@ def get_fund_list():
         {'code': '005911', 'name': '广发双擎升级混合A', 'type': '混合型'},
         {'code': '006751', 'name': '嘉实农业产业股票', 'type': '股票型'}
     ]
-    
-    # 尝试加载外部基金列表
-    try:
-        external_df = pd.read_csv('selected_funds.csv')
-        # 确保 DataFrame 有 '基金代码' 和 '基金名称' 列
-        if not external_df.empty and '基金代码' in external_df.columns and '基金名称' in external_df.columns:
-            # 重命名列以匹配 fund_list 结构
-            external_df = external_df.rename(columns={'基金代码': 'code', '基金名称': 'name'})
-            # 移除可能重复的基金
-            existing_codes = {f['code'] for f in fund_list}
-            new_funds = external_df[~external_df['code'].isin(existing_codes)]
-            
-            # 将新基金转换为列表，并添加到 fund_list 中
-            new_funds_list = new_funds.to_dict('records')
-            for fund in new_funds_list:
-                fund_list.append({'code': str(fund['code']), 'name': fund['name'], 'type': '外部导入'})
-            print(f"成功从 selected_funds.csv 导入 {len(new_funds)} 只新基金。")
-        else:
-            print("警告: selected_funds.csv 文件格式不正确或为空，跳过导入。")
-    except FileNotFoundError:
-        print("未找到 selected_funds.csv 文件，跳过导入外部基金。")
-    except Exception as e:
-        print(f"导入外部基金时发生错误: {e}")
-        
     return pd.DataFrame(fund_list)
 
 # 步骤 2: 获取历史净值（主备双重保险）
@@ -106,27 +83,21 @@ def get_net_values_from_pingzhongdata(code, start_date, end_date):
         print(f"pingzhongdata 响应状态码: {response.status_code}")
         response.raise_for_status()
 
-        # 检查响应内容
         if not response.text.strip():
             print(f"pingzhongdata 获取基金 {code} 失败：响应内容为空")
             return pd.DataFrame(), None
 
-        # 提取净值数据
         net_worth_match = re.search(r'Data_netWorthTrend\s*=\s*(\[.*?\]);', response.text, re.DOTALL)
         if not net_worth_match:
             print(f"pingzhongdata 获取基金 {code} 失败：无法找到 Data_netWorthTrend")
-            print(f"响应内容前200字符：{response.text[:200]}...")
             return pd.DataFrame(), None
 
-        # 解析 JSON
         try:
             net_worth_list = json.loads(net_worth_match.group(1))
         except json.JSONDecodeError as e:
             print(f"pingzhongdata 获取基金 {code} 失败：JSON 解析错误，{e}")
-            print(f"响应内容前200字符：{response.text[:200]}...")
             return pd.DataFrame(), None
 
-        # 转换为 DataFrame
         df = pd.DataFrame(net_worth_list)
         if 'x' not in df or 'y' not in df:
             print(f"pingzhongdata 获取基金 {code} 失败：数据缺少 x 或 y 字段")
@@ -149,7 +120,6 @@ def get_net_values_from_pingzhongdata(code, start_date, end_date):
 
     except requests.exceptions.RequestException as e:
         print(f"pingzhongdata 获取基金 {code} 失败: {e}")
-        print(f"响应状态码: {response.status_code if 'response' in locals() else '无响应'}")
         return pd.DataFrame(), None
 
 def get_net_values_from_lsjz(code, start_date, end_date):
@@ -166,20 +136,16 @@ def get_net_values_from_lsjz(code, start_date, end_date):
         print(f"lsjz 响应状态码: {response.status_code}")
         response.raise_for_status()
 
-        # 提取 JSON 数据
         data_str_match = re.search(r'var\s+apidata=\{content:"(.*?)",', response.text, re.DOTALL)
         if not data_str_match:
             print(f"lsjz 获取基金 {code} 失败：无法找到 apidata.content")
-            print(f"响应内容前200字符：{response.text[:200]}...")
             return pd.DataFrame(), None
 
-        # 清理和解析 JSON
         json_data_str = data_str_match.group(1).replace("\\", "")
         try:
             data = json.loads(json_data_str)
         except json.JSONDecodeError as e:
             print(f"lsjz 获取基金 {code} 失败：JSON 解析错误，{e}")
-            print(f"响应内容前200字符：{response.text[:200]}...")
             return pd.DataFrame(), None
 
         if 'LSJZList' not in data or not data['LSJZList']:
@@ -204,7 +170,6 @@ def get_net_values_from_lsjz(code, start_date, end_date):
 
     except requests.exceptions.RequestException as e:
         print(f"lsjz 获取基金 {code} 失败: {e}")
-        print(f"响应状态码: {response.status_code if 'response' in locals() else '无响应'}")
         return pd.DataFrame(), None
 
 # 步骤 3: 获取实时估值
@@ -276,6 +241,44 @@ def get_fund_fee(code):
         print(f"获取基金 {code} 管理费失败: {e}")
         return 1.5
 
+# 新增函数: 获取基金持仓信息
+def get_fund_holdings(code):
+    """
+    从天天基金网获取基金持仓信息。
+    """
+    print(f"尝试获取基金 {code} 的持仓详情...")
+    url = f"http://fund.eastmoney.com/DataCenter/Fund/JJZCHoldDetail.aspx?fundCode={code}"
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'http://fund.eastmoney.com/f10/jjcc_{code}.html'
+    }
+    try:
+        response = session.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        holdings = []
+        # 查找持仓表格
+        # 这段代码依赖于HTML结构，如果未来网页改版可能需要调整
+        stock_table = soup.find('table', {'class': 'm-table'})
+        if stock_table:
+            for row in stock_table.find_all('tr')[1:]: # 跳过表头
+                cells = row.find_all('td')
+                if len(cells) >= 4:
+                    holdings.append({
+                        'name': cells[1].text.strip(),
+                        'code': cells[2].text.strip(),
+                        'ratio': cells[3].text.strip()
+                    })
+        return holdings
+    except requests.exceptions.RequestException as e:
+        print(f"获取基金 {code} 持仓信息失败: {e}")
+        return []
+    except Exception as e:
+        print(f"解析基金 {code} 持仓信息时出错: {e}")
+        return []
+
 # 步骤 5: 计算指标
 def calculate_metrics(net_df, start_date, end_date):
     """
@@ -315,7 +318,7 @@ def main():
     debug_data = []
 
     for idx, row in funds_df.iterrows():
-        code = str(row['code'])
+        code = row['code']
         name = row['name']
         print(f"\n处理基金: {name} ({code})")
 
@@ -397,13 +400,31 @@ def main():
     debug_df.to_csv('debug_fund_metrics.csv', index=False, encoding='utf-8-sig')
     print("调试信息已保存至 debug_fund_metrics.csv")
 
-    # 输出结果
+    # 输出结果并获取持仓信息
     if results:
         final_df = pd.DataFrame(results).sort_values('综合评分', ascending=False)
         print("\n--- 符合条件的推荐基金列表 ---")
         print(final_df)
         final_df.to_csv('recommended_cn_funds.csv', index=False, encoding='utf-8-sig')
         print("\n结果已保存至 recommended_cn_funds.csv 文件。")
+
+        # ------------------- 新增功能：获取持仓信息 -------------------
+        for idx, row in final_df.iterrows():
+            code = row['基金代码']
+            name = row['基金名称']
+            
+            holdings = get_fund_holdings(code)
+            
+            if holdings:
+                print(f"\n--- 基金 {name} ({code}) 持仓详情 ---")
+                for holding in holdings:
+                    print(f"  - 股票名称: {holding.get('name', 'N/A')}, 股票代码: {holding.get('code', 'N/A')}, 占比: {holding.get('ratio', 'N/A')}")
+            else:
+                print(f"\n--- 基金 {name} ({code}) 未能获取到持仓数据 ---")
+            
+            print("-" * 50)
+            time.sleep(random.uniform(2, 5)) # 随机延时 2-5 秒
+            
     else:
         print("\n没有找到符合条件的基金，建议调整筛选条件。")
 

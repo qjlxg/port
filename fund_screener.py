@@ -1,21 +1,20 @@
 import pandas as pd
 import requests
 import numpy as np
-import re
 import json
 from datetime import datetime, timedelta
 import time
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# 筛选条件（宽松）
+# 筛选条件
 MIN_RETURN = 5.0  # 年化收益率 ≥ 5%
 MAX_VOLATILITY = 20.0  # 年化波动率 ≤ 20%
 MIN_SHARPE = 0.3  # 夏普比率 ≥ 0.3
 MAX_FEE = 2.0  # 管理费 ≤ 2%
 RISK_FREE_RATE = 3.0  # 无风险利率 3%
 
-# 配置 requests 重试机制
+# 配置 requests 重试机制，以应对网络波动
 session = requests.Session()
 retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
 session.mount('http://', HTTPAdapter(max_retries=retries))
@@ -23,7 +22,7 @@ session.mount('http://', HTTPAdapter(max_retries=retries))
 # --- 步骤 1: 获取基金列表 ---
 def get_fund_list():
     """
-    获取热门基金列表。未来可改为动态获取全市场基金列表的接口。
+    获取热门基金列表。
     """
     fund_list = [
         {'code': '161725', 'name': '招商中证白酒指数', 'type': '股票型'},
@@ -49,10 +48,17 @@ def get_fund_net_values(code, start_date, end_date):
     try:
         response = session.get(url, headers=headers, timeout=15)
         response.raise_for_status()
-        data = json.loads(response.text)
         
+        # 尝试将响应内容解析为 JSON
+        try:
+            data = json.loads(response.text)
+        except json.JSONDecodeError:
+            print(f"获取基金 {code} 历史净值失败：响应内容不是有效的JSON。")
+            print(f"响应内容前200字符：{response.text[:200]}...")
+            return pd.DataFrame()
+
         if 'Data' not in data or not data['Data']['LSJZList']:
-            print(f"获取基金 {code} 历史净值数据失败，数据为空。")
+            print(f"获取基金 {code} 历史净值数据为空。")
             return pd.DataFrame()
             
         net_values = data['Data']['LSJZList']
@@ -83,7 +89,6 @@ def get_fund_fee(code):
     从天天基金网的API获取基金管理费率。
     """
     print(f"尝试从天天基金网获取基金 {code} 管理费...")
-    # 这个接口比网页解析更稳定，但偶尔会失败
     url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js?v={int(time.time() * 1000)}"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)'

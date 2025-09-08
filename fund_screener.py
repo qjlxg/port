@@ -1,3 +1,4 @@
+import akshare as ak
 import requests
 import pandas as pd
 import numpy as np
@@ -8,20 +9,26 @@ import time
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# 筛选条件（可调整）
-MIN_RETURN = 7.0  # 最低年化收益率 (%)
-MAX_VOLATILITY = 15.0  # 最大波动率 (%)
-MIN_SHARPE = 0.5  # 最低夏普比率
-MAX_FEE = 1.5  # 最高管理费 (%)
-RISK_FREE_RATE = 3.0  # 无风险利率 (%)
+# 筛选条件（放宽以确保结果）
+MIN_RETURN = 5.0  # 年化收益率 ≥ 5%
+MAX_VOLATILITY = 20.0  # 波动率 ≤ 20%
+MIN_SHARPE = 0.3  # 夏普比率 ≥ 0.3
+MAX_FEE = 2.0  # 管理费 ≤ 2%
+RISK_FREE_RATE = 3.0  # 无风险利率 3%
 
 # 配置 requests 重试机制
 session = requests.Session()
 retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
 session.mount('http://', HTTPAdapter(max_retries=retries))
 
-# 步骤1: 获取所有基金列表
-def get_all_funds():
+# 步骤1: 获取基金列表（AKShare + 天天基金网）
+def get_fund_list():
+    # AKShare 基金列表
+    ak_funds = ak.fund_name_em()
+    ak_funds = ak_funds[ak_funds['基金类型'].isin(['股票型', '混合型'])][['基金代码', '基金简称', '基金类型']]
+    ak_funds.columns = ['code', 'name', 'type']
+    
+    # 天天基金网基金列表
     url = "http://fund.eastmoney.com/js/fundcode_search.js"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     try:
@@ -29,17 +36,36 @@ def get_all_funds():
         response.raise_for_status()
         data_str = re.findall(r'\[.*\]', response.text)[0]
         funds = json.loads(data_str)
-        df = pd.DataFrame(funds, columns=['code', 'pinyin', 'name', 'type', 'full_name'])
-        # 过滤股票型和混合型基金
-        stock_mixed = df[df['type'].isin(['股票型', '混合型'])]
-        # 选取前 20 只基金（减少请求量）
-        return stock_mixed.head(20)
+        tt_funds = pd.DataFrame(funds, columns=['code', 'pinyin', 'name', 'type', 'full_name'])
+        tt_funds = tt_funds[tt_funds['type'].isin(['股票型', '混合型'])]
     except Exception as e:
-        print(f"获取基金列表失败: {e}")
-        return pd.DataFrame()
+        print(f"天天基金网获取基金列表失败: {e}")
+        tt_funds = pd.DataFrame()
+    
+    # 合并：优先使用 AKShare，补充天天基金网的独有基金
+    if not tt_funds.empty:
+        combined = pd.concat([ak_funds, tt_funds[~tt_funds['code'].isin(ak_funds['code'])]])
+    else:
+        combined = ak_funds
+    # 选取前 10 只热门基金（减少请求量）
+    return combined.head(10)
 
-# 步骤2: 获取单基金历史净值（过去3年）
+# 步骤2: 获取历史净值（AKShare 优先，失败则用天天基金网）
 def get_fund_net_values(code, start_date, end_date):
+    # AKShare 尝试
+    try:
+        net_df = ak.fund_hist_em(symbol=code, adjust='qfq')
+        net_df['日期'] = pd.to_datetime(net_df['日期'])
+        net_df = net_df[(net_df['日期'] >= pd.to_datetime(start_date)) &
+                        (net_df['日期'] <= pd.to_datetime(end_date))]
+        net_df = net_df.sort_values('日期')
+        ak_latest = net_df['单位净值'].iloc[-1] if not net_df.empty else None
+        if len(net_df) >= 100:
+            return net_df, ak_latest, 'AKShare'
+    except Exception as e:
+        print(f"AKShare 获取基金 {code} 净值失败: {e}")
+    
+    # 回退到天天基金网
     url = f"http://fund.eastmoney.com/f10/F10DataApi.aspx?type=lsjz&code={code}&page=1&sdate={start_date}&edate={end_date}&per=50000"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     try:
@@ -47,18 +73,19 @@ def get_fund_net_values(code, start_date, end_date):
         response.raise_for_status()
         data_str = re.findall(r'data:(.*?),pages', response.text)
         if not data_str:
-            return pd.DataFrame()
+            return pd.DataFrame(), None, 'None'
         net_values = json.loads(data_str[0])
         df = pd.DataFrame(net_values, columns=['date', 'net_value', 'total_value', 'daily_return', 'buy_status', 'sell_status'])
         df['date'] = pd.to_datetime(df['date'])
         df['net_value'] = pd.to_numeric(df['net_value'], errors='coerce')
         df = df.sort_values('date').dropna(subset=['net_value'])
-        return df
+        tt_latest = df['net_value'].iloc[-1] if not df.empty else None
+        return df, tt_latest, '天天基金网'
     except Exception as e:
-        print(f"获取基金 {code} 净值失败: {e}")
-        return pd.DataFrame()
+        print(f"天天基金网获取基金 {code} 净值失败: {e}")
+        return pd.DataFrame(), None, 'None'
 
-# 步骤3: 获取基金管理费
+# 步骤3: 获取管理费（天天基金网）
 def get_fund_fee(code):
     url = f"http://fund.eastmoney.com/{code}.html"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -90,23 +117,41 @@ def calculate_metrics(net_df):
 start_date = (datetime.now() - timedelta(days=3*365)).strftime('%Y-%m-%d')
 end_date = datetime.now().strftime('%Y-%m-%d')
 
-funds_df = get_all_funds()
+funds_df = get_fund_list()
 if funds_df.empty:
     print("无法获取基金列表，程序退出。")
     exit(1)
 
 print(f"获取到 {len(funds_df)} 只候选基金")
 results = []
+debug_data = []
 for idx, row in funds_df.iterrows():
     code = row['code']
-    print(f"处理基金: {row['name']} ({code})")
-    net_df = get_fund_net_values(code, start_date, end_date)
+    name = row['name']
+    print(f"处理基金: {name} ({code})")
+    # 获取净值
+    net_df, latest_net_value, data_source = get_fund_net_values(code, start_date, end_date)
     if net_df.empty:
+        debug_data.append({'基金代码': code, '基金名称': name, '失败原因': '无净值数据', '数据来源': data_source})
         continue
+    # 计算指标
     metrics = calculate_metrics(net_df)
     if metrics is None:
+        debug_data.append({'基金代码': code, '基金名称': name, '失败原因': '数据不足100天', '数据来源': data_source})
         continue
+    # 获取管理费
     fee = get_fund_fee(code)
+    # 调试信息
+    debug_info = {
+        '基金代码': code,
+        '基金名称': name,
+        '年化收益率 (%)': metrics['annual_return'],
+        '波动率 (%)': metrics['volatility'],
+        '夏普比率': metrics['sharpe'],
+        '管理费 (%)': fee,
+        '最新净值': latest_net_value,
+        '数据来源': data_source
+    }
     # 筛选
     if (metrics['annual_return'] >= MIN_RETURN and
         metrics['volatility'] <= MAX_VOLATILITY and
@@ -114,18 +159,27 @@ for idx, row in funds_df.iterrows():
         fee <= MAX_FEE):
         result = {
             '基金代码': code,
-            '基金名称': row['name'],
+            '基金名称': name,
             '年化收益率 (%)': metrics['annual_return'],
             '波动率 (%)': metrics['volatility'],
             '夏普比率': metrics['sharpe'],
-            '管理费 (%)': round(fee, 2)
+            '管理费 (%)': round(fee, 2),
+            '数据来源': data_source
         }
         score = (0.6 * (metrics['annual_return'] / 20) +
                  0.3 * metrics['sharpe'] +
                  0.1 * (2 - fee))
         result['综合评分'] = round(score, 2)
         results.append(result)
-    time.sleep(2)  # 延长间隔
+    else:
+        debug_info['失败原因'] = '未通过筛选'
+    debug_data.append(debug_info)
+    time.sleep(2)
+
+# 输出调试信息
+debug_df = pd.DataFrame(debug_data)
+debug_df.to_csv('debug_fund_metrics.csv', index=False, encoding='utf-8-sig')
+print("调试信息保存到 debug_fund_metrics.csv")
 
 # 输出结果
 if results:

@@ -2,6 +2,7 @@ import pandas as pd
 import requests
 import numpy as np
 import json
+import re
 from datetime import datetime, timedelta
 import time
 import random
@@ -15,12 +16,12 @@ MIN_SHARPE = 0.3  # 夏普比率 ≥ 0.3
 MAX_FEE = 2.0  # 管理费 ≤ 2%
 RISK_FREE_RATE = 3.0  # 无风险利率 3%
 
-# 配置 requests 重试机制
+# 配置 requests 重试机制，以应对网络波动
 session = requests.Session()
 retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
 session.mount('http://', HTTPAdapter(max_retries=retries))
 
-# 步骤 1: 获取基金列表
+# --- 步骤 1: 获取基金列表 ---
 def get_fund_list():
     """
     获取热门基金列表，覆盖多种类型。
@@ -37,41 +38,46 @@ def get_fund_list():
     ]
     return pd.DataFrame(fund_list)
 
-# 步骤 2: 获取历史净值
+# --- 步骤 2: 获取历史净值 ---
 def get_fund_net_values(code, start_date, end_date):
     """
     从天天基金网 API 获取基金历史净值数据。
     """
     print(f"尝试从天天基金网获取基金 {code} 历史净值...")
-    url = f"http://api.fund.eastmoney.com/f10/lsjz?fundCode={code}&startDate={start_date}&endDate={end_date}&pageIndex=1&pageSize=50000"
+    # 使用更稳定的接口，返回的是包含 JSON 的 HTML
+    url = f"http://fund.eastmoney.com/f10/lsjz?fundCode={code}&pageIndex=1&pageSize=50000"
+    
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Referer': f'http://fund.eastmoney.com/{code}.html',
-        'Host': 'api.fund.eastmoney.com'
+        'Referer': f'http://fund.eastmoney.com/f10/fjcc_{code}.html',
+        'Host': 'fund.eastmoney.com'
     }
+    
     try:
         response = session.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         
-        # 检查响应内容是否为空
-        if not response.text.strip():
-            print(f"获取基金 {code} 历史净值失败：响应内容为空")
+        # 预处理：使用正则表达式从响应内容中提取 JSON 字符串
+        data_str_match = re.search(r'var\s+apidata=\{content:"(.*?)",', response.text, re.DOTALL)
+        if not data_str_match:
+            print(f"获取基金 {code} 历史净值失败：无法在响应中找到数据。")
             return pd.DataFrame(), None, '天天基金网'
-        
+            
+        # 移除转义字符
+        json_data_str = data_str_match.group(1).replace("\\", "")
+
         # 解析 JSON
         try:
-            data = json.loads(response.text)
+            data = json.loads(json_data_str)
         except json.JSONDecodeError as e:
             print(f"获取基金 {code} 历史净值失败：响应内容不是有效 JSON，错误：{e}")
-            print(f"响应内容前200字符：{response.text[:200]}...")
             return pd.DataFrame(), None, '天天基金网'
         
-        # 检查数据结构
-        if not isinstance(data, dict) or 'Data' not in data or not data['Data'] or not data['Data'].get('LSJZList'):
+        if 'LSJZList' not in data or not data['LSJZList']:
             print(f"获取基金 {code} 历史净值数据为空或格式错误")
             return pd.DataFrame(), None, '天天基金网'
-        
-        net_values = data['Data']['LSJZList']
+            
+        net_values = data['LSJZList']
         df = pd.DataFrame(net_values)
         df = df.rename(columns={'FSRQ': 'date', 'DWJZ': 'net_value', 'LJJZ': 'total_value', 'JZZZL': 'daily_return'})
         df['date'] = pd.to_datetime(df['date'])
@@ -80,12 +86,12 @@ def get_fund_net_values(code, start_date, end_date):
         latest_net_value = df['net_value'].iloc[-1] if not df.empty else None
         print(f"基金 {code} 成功获取 {len(df)} 条净值数据。")
         return df, latest_net_value, '天天基金网'
+        
     except requests.exceptions.RequestException as e:
         print(f"获取基金 {code} 净值失败: {e}")
-        print(f"响应状态码: {response.status_code if 'response' in locals() else '无响应'}")
         return pd.DataFrame(), None, '天天基金网'
 
-# 步骤 3: 获取管理费
+# --- 步骤 3: 获取管理费 ---
 def get_fund_fee(code):
     """
     从天天基金网获取管理费，带手动备用。
@@ -98,7 +104,7 @@ def get_fund_fee(code):
         '519674': 1.5,  # 银河创新成长混合
         '501057': 0.5,  # 汇添富中证新能源ETF
         '005911': 1.5,  # 广发双擎升级混合A
-        '006751': 1.5   # 嘉实农业产业股票
+        '006751': 1.5    # 嘉实农业产业股票
     }
     if code in manual_fees:
         print(f"基金 {code} 使用手动管理费: {manual_fees[code]}%")
@@ -126,7 +132,7 @@ def get_fund_fee(code):
         print(f"获取基金 {code} 管理费失败: {e}")
         return 1.5
 
-# 步骤 4: 计算指标
+# --- 步骤 4: 计算指标 ---
 def calculate_metrics(net_df):
     """
     计算基金的年化收益率、波动率和夏普比率。
@@ -146,7 +152,7 @@ def calculate_metrics(net_df):
         'sharpe': round(sharpe, 2)
     }
 
-# 主函数
+# --- 主函数 ---
 def main():
     end_date = datetime.now().strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=3 * 365)).strftime('%Y-%m-%d')
@@ -208,6 +214,7 @@ def main():
             metrics['volatility'] <= MAX_VOLATILITY and
             metrics['sharpe'] >= MIN_SHARPE and
             fee <= MAX_FEE):
+            
             result = {
                 '基金代码': code,
                 '基金名称': name,
@@ -217,6 +224,7 @@ def main():
                 '管理费 (%)': round(fee, 2),
                 '数据来源': data_source
             }
+            # 计算综合评分
             score = (0.6 * (metrics['annual_return'] / 20) +
                      0.3 * metrics['sharpe'] +
                      0.1 * (2 - fee))

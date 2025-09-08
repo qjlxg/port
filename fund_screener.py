@@ -33,7 +33,7 @@ USER_AGENTS = [
 # 步骤 1: 获取基金列表
 def get_fund_list():
     """
-    获取热门基金列表，覆盖多种类型。
+    获取热门基金列表，并尝试从 selected_funds.csv 加载额外基金。
     """
     fund_list = [
         {'code': '161725', 'name': '招商中证白酒指数', 'type': '股票型'},
@@ -45,6 +45,30 @@ def get_fund_list():
         {'code': '005911', 'name': '广发双擎升级混合A', 'type': '混合型'},
         {'code': '006751', 'name': '嘉实农业产业股票', 'type': '股票型'}
     ]
+    
+    # 尝试加载外部基金列表
+    try:
+        external_df = pd.read_csv('selected_funds.csv')
+        # 确保 DataFrame 有 '基金代码' 和 '基金名称' 列
+        if not external_df.empty and '基金代码' in external_df.columns and '基金名称' in external_df.columns:
+            # 重命名列以匹配 fund_list 结构
+            external_df = external_df.rename(columns={'基金代码': 'code', '基金名称': 'name'})
+            # 移除可能重复的基金
+            existing_codes = {f['code'] for f in fund_list}
+            new_funds = external_df[~external_df['code'].isin(existing_codes)]
+            
+            # 将新基金转换为列表，并添加到 fund_list 中
+            new_funds_list = new_funds.to_dict('records')
+            for fund in new_funds_list:
+                fund_list.append({'code': str(fund['code']), 'name': fund['name'], 'type': '外部导入'})
+            print(f"成功从 selected_funds.csv 导入 {len(new_funds)} 只新基金。")
+        else:
+            print("警告: selected_funds.csv 文件格式不正确或为空，跳过导入。")
+    except FileNotFoundError:
+        print("未找到 selected_funds.csv 文件，跳过导入外部基金。")
+    except Exception as e:
+        print(f"导入外部基金时发生错误: {e}")
+        
     return pd.DataFrame(fund_list)
 
 # 步骤 2: 获取历史净值（主备双重保险）
@@ -291,7 +315,7 @@ def main():
     debug_data = []
 
     for idx, row in funds_df.iterrows():
-        code = row['code']
+        code = str(row['code'])
         name = row['name']
         print(f"\n处理基金: {name} ({code})")
 

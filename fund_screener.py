@@ -181,6 +181,22 @@ def load_fund_list(file_path='fund_codes.txt'):
 def is_otc_fund(code):
     return code.startswith('0')
 
+def check_fund_fee(code):
+    if not is_otc_fund(code):
+        return None, "非场外基金"
+
+    fee, error = get_fund_fee(code)
+    time.sleep(random.uniform(2, 5)) # 增加延时
+
+    if error:
+        return None, f"获取管理费失败: {error}"
+    if fee is None:
+        return None, "未找到管理费"
+    if fee > MAX_FEE:
+        return None, f"管理费 {fee}% 超过最大值 {MAX_FEE}%"
+
+    return code, None
+
 def pre_screen_funds(fund_list):
     valid_funds = []
     cache_file = 'cache/pre_screened_funds.csv'
@@ -188,25 +204,17 @@ def pre_screen_funds(fund_list):
     if cached_data is not None:
         return cached_data['基金代码'].tolist()
 
-    # 并行处理管理费筛选
-    def check_fund_fee(code):
-        if not is_otc_fund(code):
-            return None
-        fee, error = get_fund_fee(code)
-        time.sleep(random.uniform(2, 5))  # 增加延时
-        if not error and fee is not None and fee <= MAX_FEE:
-            return code
-        return None
-
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_code = {executor.submit(check_fund_fee, code): code for code in fund_list}
         for future in as_completed(future_to_code):
             code = future_to_code[future]
             try:
-                result = future.result()
+                result, error_reason = future.result()
                 if result:
                     valid_funds.append(result)
-                print(f"预筛选基金：{code} {'通过' if result else '未通过'}", flush=True)
+                    print(f"预筛选基金：{code} 通过", flush=True)
+                else:
+                    print(f"预筛选基金：{code} 未通过。原因: {error_reason}", flush=True)
             except Exception as e:
                 print(f"预筛选基金 {code} 失败: {e}", flush=True)
 
@@ -225,14 +233,14 @@ def process_fund(code):
         debug_info['失败原因'] = realtime_error
         return None, debug_info
 
-    time.sleep(random.uniform(18, 15))  # 增加延时
+    time.sleep(random.uniform(8, 13))  # 增加延时
     fee, fee_error = get_fund_fee(code)
     debug_info['管理费 (%)'] = fee
     if fee_error:
         debug_info['失败原因'] = fee_error
         return None, debug_info
 
-    time.sleep(random.uniform(10, 18))  # 增加延时
+    time.sleep(random.uniform(8, 19))  # 增加延时
     df_history, history_error = get_fund_history_data(code)
     debug_info['数据条数'] = len(df_history) if df_history is not None else 0
     debug_info['数据开始日期'] = df_history['净值日期'].iloc[0] if df_history is not None and not df_history.empty else 'N/A'
@@ -329,7 +337,6 @@ def main():
                 except Exception as e:
                     batch_debug.append({'基金代码': code, '失败原因': f'处理失败: {e}'})
                 print(f"完成处理基金：{code}", flush=True)
-                time.sleep(random.uniform(2, 5))
 
         if batch_results:
             batch_df = pd.DataFrame(batch_results)

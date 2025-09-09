@@ -3,16 +3,15 @@ import requests
 import numpy as np
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import random
+import os
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from io import StringIO
 from requests.exceptions import RequestException
-import asyncio
-import aiohttp
-from aiohttp import TCPConnector
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 筛选条件
 MIN_RETURN = 3.0  # 年化收益率 ≥ 3%
@@ -21,6 +20,15 @@ MIN_SHARPE = 0.2  # 夏普比率 ≥ 0.2
 MAX_FEE = 2.5  # 管理费 ≤ 2.5%
 RISK_FREE_RATE = 3.0  # 无风险利率 3%
 MIN_DAYS = 100  # 最低数据天数
+BATCH_SIZE = 1000  # 每批处理基金数量
+MAX_WORKERS = 10  # 并行线程数
+CACHE_DAYS = 1  # 缓存有效期（天）
+
+# 配置 requests 重试机制
+session = requests.Session()
+retries = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
+session.mount('http://', HTTPAdapter(max_retries=retries))
+session.mount('https://', HTTPAdapter(max_retries=retries))
 
 # 随机 User-Agent 列表
 USER_AGENTS = [
@@ -35,83 +43,112 @@ USER_AGENTS = [
 def get_random_user_agent():
     return random.choice(USER_AGENTS)
 
-async def fetch_web_data_async(session, url):
+def fetch_web_data(url, proxies=None):
     """通用网页数据抓取函数，带随机UA和重试"""
     headers = {'User-Agent': get_random_user_agent()}
-    retries = 3
-    e = None  # 初始化 'e' 变量
-    for i in range(retries):
-        try:
-            async with session.get(url, headers=headers, timeout=10) as response:
-                response.raise_for_status()
-                return await response.text(), None
-        except aiohttp.ClientError as exc:
-            e = exc  # 将异常赋值给 e
-            await asyncio.sleep(random.uniform(1, 3))  # 失败后随机延时重试
-    return None, f"请求失败，已重试 {retries} 次: {e}"
+    try:
+        response = session.get(url, headers=headers, timeout=10, proxies=proxies)
+        response.raise_for_status()
+        return response.text, None
+    except RequestException as e:
+        return None, f"请求失败: {e}"
 
-async def get_fund_history_data(session, code):
-    """
-    从天天基金网获取基金历史净值数据
-    """
+def load_cache(file_path, max_age_days=CACHE_DAYS):
+    """加载缓存数据"""
+    if not os.path.exists(file_path):
+        return None
+    if (datetime.now() - datetime.fromtimestamp(os.path.getmtime(file_path))) > timedelta(days=max_age_days):
+        return None
+    try:
+        return pd.read_csv(file_path, encoding='utf-8-sig')
+    except Exception as e:
+        print(f"加载缓存 {file_path} 失败: {e}", flush=True)
+        return None
+
+def save_cache(df, file_path):
+    """保存缓存数据"""
+    try:
+        df.to_csv(file_path, index=False, encoding='utf-8-sig')
+    except Exception as e:
+        print(f"保存缓存 {file_path} 失败: {e}", flush=True)
+
+def get_fund_history_data(code):
+    """从天天基金网获取基金历史净值数据"""
+    cache_file = f"cache/history_{code}.csv"
+    cached_data = load_cache(cache_file)
+    if cached_data is not None:
+        return cached_data, None
+
     url = f"http://fund.eastmoney.com/f10/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=10000"
-    html, error = await fetch_web_data_async(session, url)
+    html, error = fetch_web_data(url)
     if error:
         return None, error
-    
+
     match = re.search(r'<tbody>(.*?)</tbody>', html, re.DOTALL)
     if not match:
         return None, "解析历史数据失败: 无法找到表格数据"
-        
+
     table_html = f"<table><thead><tr><th>净值日期</th><th>单位净值</th><th>累计净值</th><th>日增长率</th><th>申购状态</th><th>赎回状态</th><th>分红送配</th></tr></thead><tbody>{match.group(1)}</tbody></table>"
-    
+
     try:
         df = pd.read_html(StringIO(table_html), header=0, encoding='utf-8')[0]
-        df = df.iloc[::-1]
+        df = df.iloc[::-1]  # 反转数据以按时间正序排列
         df.columns = ['净值日期', '单位净值', '累计净值', '日增长率', '申购状态', '赎回状态', '分红送配']
         df['单位净值'] = pd.to_numeric(df['单位净值'], errors='coerce')
         df['累计净值'] = pd.to_numeric(df['累计净值'], errors='coerce')
         df = df.dropna(subset=['单位净值']).reset_index(drop=True)
+        save_cache(df, cache_file)
         return df, None
     except Exception as e:
         return None, f"解析历史数据失败: {e}"
 
-async def get_fund_realtime_info(session, code):
-    """
-    从天天基金网获取基金实时估值和名称
-    """
+def get_fund_realtime_info(code):
+    """从天天基金网获取基金实时估值和名称"""
+    cache_file = f"cache/realtime_{code}.csv"
+    cached_data = load_cache(cache_file)
+    if cached_data is not None:
+        return (cached_data['基金名称'].iloc[0], cached_data['实时估值'].iloc[0],
+                cached_data['最新净值'].iloc[0], cached_data['数据来源'].iloc[0], None)
+
     url = f"http://fundgz.fund.eastmoney.com/Fundgz.ashx?type=js&code={code}"
-    response, error = await fetch_web_data_async(session, url)
+    response, error = fetch_web_data(url)
     if error:
         return None, None, None, None, error
 
     try:
         json_str = response.replace('jsonpgz(', '').replace(');', '')
         data = json.loads(json_str)
-        
         name = data.get('name')
         gszzl = data.get('gszzl')
-        
         latest_net_value = float(data.get('dwjz'))
         realtime_estimate = latest_net_value * (1 + float(gszzl) / 100) if gszzl and gszzl != '' else None
-        
-        return name, realtime_estimate, latest_net_value, "pingzhongdata", None
+        cache_df = pd.DataFrame([{
+            '基金名称': name, '实时估值': realtime_estimate,
+            '最新净值': latest_net_value, '数据来源': 'pingzhongdata'
+        }])
+        save_cache(cache_df, cache_file)
+        return name, realtime_estimate, latest_net_value, 'pingzhongdata', None
     except Exception as e:
         return None, None, None, None, f"获取实时数据失败: {e}"
 
-async def get_fund_fee(session, code):
-    """
-    获取基金管理费
-    """
+def get_fund_fee(code):
+    """获取基金管理费"""
+    cache_file = f"cache/fee_{code}.csv"
+    cached_data = load_cache(cache_file)
+    if cached_data is not None:
+        return cached_data['管理费'].iloc[0], None
+
     url = f"http://fund.eastmoney.com/{code}.html"
-    html, error = await fetch_web_data_async(session, url)
+    html, error = fetch_web_data(url)
     if error:
         return None, error
-    
+
     try:
         match = re.search(r'管理费率：(\d+\.\d+)%', html)
         if match:
             fee = float(match.group(1))
+            cache_df = pd.DataFrame([{'管理费': fee}])
+            save_cache(cache_df, cache_file)
             return fee, None
         else:
             return None, "无法获取管理费率"
@@ -119,9 +156,7 @@ async def get_fund_fee(session, code):
         return None, f"解析管理费失败: {e}"
 
 def calculate_fund_metrics(df_history, risk_free_rate):
-    """
-    计算基金的年化收益率、年化波动率和夏普比率
-    """
+    """计算基金的年化收益率、年化波动率和夏普比率"""
     if df_history is None or df_history.empty:
         return None, "无净值数据"
 
@@ -130,11 +165,10 @@ def calculate_fund_metrics(df_history, risk_free_rate):
         return None, f"数据天数不足{MIN_DAYS}天，跳过"
 
     daily_returns = df_history['单位净值'].pct_change().dropna()
-    
     annual_return = np.power((1 + daily_returns).prod(), 252 / num_days) - 1
     volatility = daily_returns.std() * np.sqrt(252)
     sharpe_ratio = (annual_return - risk_free_rate / 100) / volatility if volatility != 0 else 0
-    
+
     metrics = {
         'annual_return': round(annual_return * 100, 2),
         'volatility': round(volatility * 100, 2),
@@ -144,9 +178,7 @@ def calculate_fund_metrics(df_history, risk_free_rate):
     return metrics, None
 
 def load_fund_list(file_path='fund_codes.txt'):
-    """
-    从文件中读取基金代码列表
-    """
+    """从文件中读取基金代码列表"""
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             return [line.strip() for line in f if line.strip()]
@@ -155,126 +187,163 @@ def load_fund_list(file_path='fund_codes.txt'):
         return []
 
 def is_otc_fund(code):
-    """
-    判断基金代码是否为场外基金（通常以0开头）
-    """
+    """判断基金代码是否为场外基金（通常以0开头）"""
     return code.startswith('0')
 
-async def process_single_fund(session, code, semaphore):
-    """
-    处理单个基金的异步任务
-    """
-    async with semaphore:
-        debug_info = {'基金代码': code, '失败原因': None}
-        result = None
+def pre_screen_funds(fund_list):
+    """预筛选基金，仅保留管理费满足条件的基金"""
+    valid_funds = []
+    cache_file = 'cache/pre_screened_funds.csv'
+    cached_data = load_cache(cache_file)
+    if cached_data is not None:
+        return cached_data['基金代码'].tolist()
 
-        name, realtime_estimate, latest_net_value, data_source, realtime_error = await get_fund_realtime_info(session, code)
-        if realtime_error:
-            debug_info['失败原因'] = realtime_error
-        else:
-            debug_info['基金名称'] = name
-            debug_info['最新净值'] = latest_net_value
-            debug_info['实时估值'] = round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A'
-            debug_info['数据来源'] = data_source
+    for code in fund_list:
+        if is_otc_fund(code):
+            fee, error = get_fund_fee(code)
+            if not error and fee is not None and fee <= MAX_FEE:
+                valid_funds.append(code)
+            time.sleep(random.uniform(0.1, 0.3))
+    cache_df = pd.DataFrame({'基金代码': valid_funds})
+    save_cache(cache_df, cache_file)
+    return valid_funds
 
-        fee, fee_error = await get_fund_fee(session, code)
-        if fee_error:
-            debug_info['失败原因'] = f"管理费获取失败: {fee_error}"
-        else:
-            debug_info['管理费 (%)'] = fee
-        
-        df_history, history_error = await get_fund_history_data(session, code)
-        if history_error:
-            debug_info['失败原因'] = history_error
-        else:
-            debug_info['数据条数'] = len(df_history)
-            debug_info['数据开始日期'] = df_history['净值日期'].iloc[0] if not df_history.empty else 'N/A'
-            debug_info['数据结束日期'] = df_history['净值日期'].iloc[-1] if not df_history.empty else 'N/A'
-            
-            metrics, metrics_error = calculate_fund_metrics(df_history, RISK_FREE_RATE)
-            if metrics_error:
-                debug_info['失败原因'] = metrics_error
-            else:
-                debug_info.update({
-                    '年化收益率 (%)': metrics['annual_return'],
-                    '年化波动率 (%)': metrics['volatility'],
-                    '夏普比率': metrics['sharpe']
-                })
+def process_fund(code):
+    """处理单个基金的逻辑"""
+    debug_info = {'基金代码': code}
+    name, realtime_estimate, latest_net_value, data_source, realtime_error = get_fund_realtime_info(code)
+    debug_info['基金名称'] = name
+    debug_info['最新净值'] = latest_net_value
+    debug_info['实时估值'] = round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A'
+    debug_info['数据来源'] = data_source
+    if realtime_error:
+        debug_info['失败原因'] = realtime_error
+        return None, debug_info
 
-                if (metrics['annual_return'] >= MIN_RETURN and
-                    metrics['volatility'] <= MAX_VOLATILITY and
-                    metrics['sharpe'] >= MIN_SHARPE and
-                    fee <= MAX_FEE):
-                    result = {
-                        '基金代码': code,
-                        '基金名称': name,
-                        '年化收益率 (%)': metrics['annual_return'],
-                        '年化波动率 (%)': metrics['volatility'],
-                        '夏普比率': metrics['sharpe'],
-                        '管理费 (%)': round(fee, 2),
-                        '最新净值': latest_net_value,
-                        '实时估值': round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A',
-                        '数据来源': data_source
-                    }
-                    score = (0.6 * (metrics['annual_return'] / 20) +
-                             0.3 * metrics['sharpe'] +
-                             0.1 * (2 - fee))
-                    result['综合评分'] = round(score, 2)
-                else:
-                    debug_info['失败原因'] = '未通过筛选'
-        
+    fee, fee_error = get_fund_fee(code)
+    debug_info['管理费 (%)'] = fee
+    if fee_error:
+        debug_info['失败原因'] = fee_error
+        return None, debug_info
+
+    df_history, history_error = get_fund_history_data(code)
+    debug_info['数据条数'] = len(df_history) if df_history is not None else 0
+    debug_info['数据开始日期'] = df_history['净值日期'].iloc[0] if df_history is not None and not df_history.empty else 'N/A'
+    debug_info['数据结束日期'] = df_history['净值日期'].iloc[-1] if df_history is not None and not df_history.empty else 'N/A'
+    if history_error:
+        debug_info['失败原因'] = history_error
+        return None, debug_info
+
+    metrics, metrics_error = calculate_fund_metrics(df_history, RISK_FREE_RATE)
+    if metrics_error:
+        debug_info['失败原因'] = metrics_error
+        return None, debug_info
+
+    debug_info.update({
+        '年化收益率 (%)': metrics['annual_return'],
+        '年化波动率 (%)': metrics['volatility'],
+        '夏普比率': metrics['sharpe']
+    })
+
+    if (metrics['annual_return'] >= MIN_RETURN and
+        metrics['volatility'] <= MAX_VOLATILITY and
+        metrics['sharpe'] >= MIN_SHARPE and
+        fee <= MAX_FEE):
+        result = {
+            '基金代码': code,
+            '基金名称': name,
+            '年化收益率 (%)': metrics['annual_return'],
+            '年化波动率 (%)': metrics['volatility'],
+            '夏普比率': metrics['sharpe'],
+            '管理费 (%)': round(fee, 2),
+            '最新净值': latest_net_value,
+            '实时估值': round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A',
+            '数据来源': data_source
+        }
+        score = (0.6 * (metrics['annual_return'] / 20) +
+                 0.3 * metrics['sharpe'] +
+                 0.1 * (2 - fee))
+        result['综合评分'] = round(score, 2)
         return result, debug_info
+    else:
+        debug_info['失败原因'] = '未通过筛选'
+        return None, debug_info
 
-async def main_async():
+def main():
+    # 创建缓存目录
+    if not os.path.exists('cache'):
+        os.makedirs('cache')
+
     fund_list = load_fund_list()
     if not fund_list:
         return
 
-    otc_fund_list = [code for code in fund_list if is_otc_fund(code)]
-    print(f"已从 {len(fund_list)} 个基金中筛选出 {len(otc_fund_list)} 个场外基金。")
-    print("开始异步处理...")
+    print("开始预筛选基金（检查管理费）...", flush=True)
+    otc_fund_list = pre_screen_funds(fund_list)
+    print(f"预筛选后剩余 {len(otc_fund_list)} 个场外基金。", flush=True)
 
-    # 限制并发数，防止请求过快
-    semaphore = asyncio.Semaphore(20)
-    
+    # 加载已处理的基金代码（断点续传）
+    processed_codes_file = 'cache/processed_codes.csv'
+    processed_codes = set(load_cache(processed_codes_file)['基金代码'].tolist()) if os.path.exists(processed_codes_file) else set()
+
     results = []
     debug_data = []
+    batch_results_files = []
 
-    conn = aiohttp.TCPConnector(ssl=False, limit=None)
-    async with aiohttp.ClientSession(connector=conn) as session:
-        tasks = [process_single_fund(session, code, semaphore) for code in otc_fund_list]
-        
-        processed_results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for i, res in enumerate(processed_results):
-            if isinstance(res, Exception):
-                # 处理未预料的异常，例如会话关闭等
-                print(f"任务 {otc_fund_list[i]} 遇到异常: {res}")
-                debug_data.append({'基金代码': otc_fund_list[i], '失败原因': f'未处理异常: {res}'})
-            else:
-                result, debug_info = res
-                if result:
-                    results.append(result)
-                debug_data.append(debug_info)
+    # 分批处理
+    for i in range(0, len(otc_fund_list), BATCH_SIZE):
+        batch = otc_fund_list[i:i + BATCH_SIZE]
+        batch = [code for code in batch if code not in processed_codes]
+        if not batch:
+            print(f"批次 {i//BATCH_SIZE + 1} 已全部处理，跳过。", flush=True)
+            continue
 
-            # 打印进度
-            if (i + 1) % 100 == 0 or (i + 1) == len(otc_fund_list):
-                print(f"处理进度：{i+1}/{len(otc_fund_list)} 个基金已完成。")
+        print(f"处理批次 {i//BATCH_SIZE + 1}，包含 {len(batch)} 个基金...", flush=True)
+        batch_results = []
+        batch_debug = []
 
-    # 保存调试信息
-    debug_df = pd.DataFrame(debug_data)
-    debug_df.to_csv('debug_fund_metrics.csv', index=False, encoding='utf-8-sig')
-    print("调试信息已保存至 debug_fund_metrics.csv")
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            future_to_code = {executor.submit(process_fund, code): code for code in batch}
+            for future in as_completed(future_to_code):
+                code = future_to_code[future]
+                try:
+                    result, debug_info = future.result()
+                    batch_debug.append(debug_info)
+                    if result:
+                        batch_results.append(result)
+                    processed_codes.add(code)
+                except Exception as e:
+                    batch_debug.append({'基金代码': code, '失败原因': f'处理失败: {e}'})
+                print(f"完成处理基金：{code}", flush=True)
+                time.sleep(random.uniform(0.1, 0.3))
 
-    # 输出结果
+        # 保存批次结果
+        if batch_results:
+            batch_df = pd.DataFrame(batch_results)
+            batch_file = f'cache/recommended_cn_funds_batch_{i//BATCH_SIZE}.csv'
+            save_cache(batch_df, batch_file)
+            batch_results_files.append(batch_file)
+        debug_df = pd.DataFrame(batch_debug)
+        save_cache(debug_df, f'cache/debug_fund_metrics_batch_{i//BATCH_SIZE}.csv')
+        pd.DataFrame({'基金代码': list(processed_codes)}).to_csv(processed_codes_file, index=False, encoding='utf-8-sig')
+
+        results.extend(batch_results)
+        debug_data.extend(batch_debug)
+
+    # 合并所有批次结果
     if results:
         final_df = pd.DataFrame(results).sort_values('综合评分', ascending=False)
         final_df.to_csv('recommended_cn_funds.csv', index=False, encoding='utf-8-sig')
-        print(f"共筛选出 {len(final_df)} 只推荐基金，结果已保存至 recommended_cn_funds.csv")
-        print("\n推荐基金列表：")
-        print(final_df)
+        print(f"共筛选出 {len(final_df)} 只推荐基金，结果已保存至 recommended_cn_funds.csv", flush=True)
+        print("\n推荐基金列表：", flush=True)
+        print(final_df, flush=True)
     else:
-        print("抱歉，没有找到符合筛选条件的基金。请尝试放宽筛选条件。")
+        print("抱歉，没有找到符合筛选条件的基金。请尝试放宽筛选条件。", flush=True)
+
+    # 合并调试信息
+    debug_df = pd.DataFrame(debug_data)
+    debug_df.to_csv('debug_fund_metrics.csv', index=False, encoding='utf-8-sig')
+    print("调试信息已保存至 debug_fund_metrics.csv", flush=True)
 
 if __name__ == '__main__':
-    asyncio.run(main_async())
+    main()

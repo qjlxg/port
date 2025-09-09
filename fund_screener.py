@@ -13,12 +13,13 @@ from io import StringIO
 from requests.exceptions import RequestException
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import akshare as ak # 导入akshare库
+from bs4 import BeautifulSoup # 导入BeautifulSoup库
 
 # 筛选条件
 MIN_RETURN = 3.0
 MAX_VOLATILITY = 25.0
 MIN_SHARPE = 0.2
-MAX_FEE = 3.5
+MAX_FEE = 2.5 # 修改为2.5%
 RISK_FREE_RATE = 3.0
 MIN_DAYS = 100
 BATCH_SIZE = 1000
@@ -111,8 +112,7 @@ def get_fund_realtime_info(code):
     except Exception as e:
         return None, None, None, None, f"使用akshare获取实时数据失败: {e}"
 
-# 使用akshare获取管理费（akshare可能没有直接API，需要从其他来源获取）
-# 暂时保留原有的get_fund_fee函数，但如果akshare有新的API，可以替换
+# 使用BeautifulSoup获取管理费（新的，更稳定的方法）
 def get_fund_fee(code):
     cache_file = f"cache/fee_{code}.csv"
     cached_data = load_cache(cache_file)
@@ -125,14 +125,18 @@ def get_fund_fee(code):
         return None, error
 
     try:
-        match = re.search(r'管理费率：(\d+\.\d+)%', html)
-        if match:
-            fee = float(match.group(1))
-            cache_df = pd.DataFrame([{'管理费': fee}])
-            save_cache(cache_df, cache_file)
-            return fee, None
-        else:
-            return None, "无法获取管理费率"
+        soup = BeautifulSoup(html, 'lxml')
+        # 寻找包含“管理费率”的行
+        target_span = soup.find('span', text='管理费率：')
+        if target_span:
+            # 找到父级元素，然后找到兄弟元素
+            fee_tag = target_span.find_next_sibling('span')
+            if fee_tag and '%' in fee_tag.text:
+                fee = float(fee_tag.text.replace('%', ''))
+                cache_df = pd.DataFrame([{'管理费': fee}])
+                save_cache(cache_df, cache_file)
+                return fee, None
+        return None, "无法获取管理费率"
     except Exception as e:
         return None, f"解析管理费失败: {e}"
 
@@ -263,8 +267,8 @@ def process_fund(code):
             '数据来源': data_source
         }
         score = (0.6 * (metrics['annual_return'] / 20) +
-                 0.3 * metrics['sharpe'] +
-                 0.1 * (2 - fee))
+                    0.3 * metrics['sharpe'] +
+                    0.1 * (2 - fee))
         result['综合评分'] = round(score, 2)
         return result, debug_info
     else:
@@ -324,7 +328,7 @@ def main():
                 except Exception as e:
                     batch_debug.append({'基金代码': code, '失败原因': f'处理失败: {e}'})
                 print(f"完成处理基金：{code}", flush=True)
-
+        
         if batch_results:
             batch_df = pd.DataFrame(batch_results)
             batch_file = f'cache/recommended_cn_funds_batch_{i//BATCH_SIZE}.csv'

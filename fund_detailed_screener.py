@@ -4,6 +4,7 @@ import asyncio
 import re
 from typing import List, Dict, Any, Tuple, Optional
 import random
+from bs4 import BeautifulSoup
 
 # 随机 User-Agent 列表
 USER_AGENTS = [
@@ -19,13 +20,15 @@ async def fetch_web_data_async(session: aiohttp.ClientSession, url: str) -> Tupl
     """通用异步网页数据抓取函数"""
     headers = {'User-Agent': random.choice(USER_AGENTS)}
     try:
-        async with session.get(url, headers=headers, timeout=10) as response:
+        async with session.get(url, headers=headers, timeout=15) as response:
             response.raise_for_status()
             return await response.text(), None
     except aiohttp.ClientError as e:
         return None, f"请求失败: {e}"
+    except asyncio.TimeoutError:
+        return None, "请求超时"
 
-async def get_manager_info(session: aiohttp.ClientSession, code: str) -> Tuple[Optional[str], Optional[int], Optional[int], Optional[str]]:
+async def get_manager_info(session: aiohttp.ClientSession, code: str) -> Tuple[Optional[str], Optional[float], Optional[int], Optional[str]]:
     """异步获取基金经理信息"""
     url = f"http://fund.eastmoney.com/{code}.html"
     html, error = await fetch_web_data_async(session, url)
@@ -39,7 +42,7 @@ async def get_manager_info(session: aiohttp.ClientSession, code: str) -> Tuple[O
 
         # 从业年限
         tenure_match = re.search(r'从业年限：<span>(.*?)年', html)
-        tenure_years = float(tenure_match.group(1)) if tenure_match else 0
+        tenure_years = float(tenure_match.group(1)) if tenure_match else 0.0
 
         # 现任基金数量
         fund_count_match = re.search(r'现任基金数：<span>(.*?)只', html)
@@ -49,32 +52,35 @@ async def get_manager_info(session: aiohttp.ClientSession, code: str) -> Tuple[O
     except Exception as e:
         return None, None, None, f"解析基金经理信息失败: {e}"
 
-async def get_holdings_info(session: aiohttp.ClientSession, code: str) -> Tuple[Optional[str], Optional[str]]:
+async def get_holdings_info(session: aiohttp.ClientSession, code: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """异步获取前十大持仓信息"""
     url = f"http://fund.eastmoney.com/f10/FundHoldings.html?fundCode={code}"
     html, error = await fetch_web_data_async(session, url)
     if error:
-        return None, error
+        return None, None, error
 
     try:
+        soup = BeautifulSoup(html, 'lxml')
         top_10_stocks = []
-        # 使用正则表达式匹配表格行
-        rows_match = re.findall(r'<table class="w782 comm tznzt">.*?<tbody>.*?<tr>(.*?)</tr>.*?</tbody>.*?</table>', html, re.DOTALL)
-        if rows_match:
-            for row in rows_match:
-                items = re.findall(r'<td>(.*?)</td>', row, re.DOTALL)
-                if len(items) >= 4:
-                    stock_name = re.sub(r'<.*?>', '', items[1]).strip()
-                    proportion = re.sub(r'<.*?>', '', items[3]).strip()
+        
+        # 使用 BeautifulSoup 定位表格
+        table = soup.find('table', class_='w782')
+        if table:
+            rows = table.find('tbody').find_all('tr')
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) >= 4:
+                    stock_name = cols[1].get_text(strip=True)
+                    proportion = cols[3].get_text(strip=True)
                     top_10_stocks.append(f"{stock_name}({proportion})")
         
         holdings_str = " | ".join(top_10_stocks)
         if not holdings_str:
             holdings_str = "无持仓数据"
-
+        
         # 匹配更新日期
-        date_match = re.search(r'截止日期：<span>(.*?)</span>', html)
-        update_date = date_match.group(1) if date_match else "N/A"
+        date_span = soup.find('span', text=re.compile(r'截止日期：'))
+        update_date = date_span.next_sibling.strip() if date_span and date_span.next_sibling else "N/A"
         
         return holdings_str, update_date, None
     except Exception as e:
@@ -85,6 +91,9 @@ async def process_fund_details(fund: Dict[str, Any], session: aiohttp.ClientSess
     async with semaphore:
         code = fund['基金代码']
         print(f"正在获取基金 {code} 的详细信息...", flush=True)
+
+        # 在每次请求前随机等待，模拟人类行为
+        await asyncio.sleep(random.uniform(1, 3))
 
         manager_name, tenure_years, fund_count, manager_error = await get_manager_info(session, code)
         if manager_error:
@@ -111,12 +120,14 @@ async def main():
 
     print(f"已加载 {len(df_funds)} 只基金，开始获取详细信息。", flush=True)
 
-    semaphore = asyncio.Semaphore(50)
+    # 降低并发数，减少被封禁的风险
+    semaphore = asyncio.Semaphore(5)
     
-    conn = aiohttp.TCPConnector(limit=50)
+    conn = aiohttp.TCPConnector(limit=5)
     async with aiohttp.ClientSession(connector=conn) as session:
         tasks = [process_fund_details(fund.to_dict(), session, semaphore) for _, fund in df_funds.iterrows()]
         
+        # 捕获所有任务的异常
         enriched_funds = await asyncio.gather(*tasks, return_exceptions=True)
         
     final_results = [item for item in enriched_funds if not isinstance(item, Exception)]
@@ -128,7 +139,7 @@ async def main():
         print("\n部分详细信息预览：", flush=True)
         print(final_df[['基金代码', '基金名称', '基金经理', '前十大持仓', '综合评分']].head(), flush=True)
     else:
-        print("\n抱歉，未能获取任何基金的详细信息。", flush=True)
+        print("\n抱歉，未能获取任何基金的详细信息。请检查网络或稍后重试。", flush=True)
 
 if __name__ == '__main__':
     asyncio.run(main())

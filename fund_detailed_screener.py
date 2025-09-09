@@ -53,7 +53,7 @@ async def get_manager_info(session: aiohttp.ClientSession, code: str) -> Tuple[O
 async def get_holdings_info(session: aiohttp.ClientSession, code: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """异步获取前十大持仓信息"""
     # *** 关键修复：更新为最新的 URL 路径格式 ***
-    url = f"http://fundf10.eastmoney.com/ccmx_{code}.html"
+    url = f"https://fundf10.eastmoney.com/ccmx_{code}.html"
     html, error = await fetch_web_data_async(session, url)
     if error:
         return None, None, error

@@ -24,6 +24,8 @@ MIN_DAYS = 100  # 最低数据天数（从 252 放宽到 100）
 TIMEOUT = 15  # 网络请求超时时间（秒）
 
 # 基金类型筛选，可选：'全部'，'混合型'，'股票型'，'指数型'，'债券型'，'QDII'，'FOF'
+# 您可以设置为单一字符串，如 '混合型'
+# 也可以设置为列表，如 ['混合型', '股票型', '指数型']
 FUND_TYPE_FILTER = ['混合型', '股票型', '指数型']
 
 # 配置 requests 重试机制
@@ -129,14 +131,15 @@ def get_net_values_from_lsjz(code, start_date, end_date):
         if not data_str_match: return pd.DataFrame(), None
         json_data_str = data_str_match.group(1).replace("\\", "")
         data = json.loads(json_data_str)
-        if 'LSJZList' not in data or not data['LSJZList']: return pd.DataFrame(), None
-        df = pd.DataFrame(data['LSJZList']).rename(columns={'FSRQ': 'date', 'DWJZ': 'net_value'})
-        df['date'] = pd.to_datetime(df['date'])
-        df['net_value'] = pd.to_numeric(df['net_value'], errors='coerce')
-        df = df[(df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))]
-        df = df.sort_values('date').dropna(subset=['net_value']).reset_index(drop=True)
-        latest_value = df['net_value'].iloc[-1] if not df.empty else None
-        return df, latest_value
+        if 'LSJZList' in data and data['LSJZList']:
+            df = pd.DataFrame(data['LSJZList']).rename(columns={'FSRQ': 'date', 'DWJZ': 'net_value'})
+            df['date'] = pd.to_datetime(df['date'])
+            df['net_value'] = pd.to_numeric(df['net_value'], errors='coerce')
+            df = df[(df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))]
+            df = df.sort_values('date').dropna(subset=['net_value']).reset_index(drop=True)
+            latest_value = df['net_value'].iloc[-1] if not df.empty else None
+            return df, latest_value
+        return pd.DataFrame(), None
     except requests.exceptions.RequestException: return pd.DataFrame(), None
     except (json.JSONDecodeError, IndexError): return pd.DataFrame(), None
 
@@ -302,7 +305,11 @@ def main():
         return
 
     # 基金类型筛选
-    if FUND_TYPE_FILTER != '全部':
+    if isinstance(FUND_TYPE_FILTER, list) and FUND_TYPE_FILTER:
+        funds_df = funds_df[funds_df['type'].isin(FUND_TYPE_FILTER)].copy()
+        print(f">>> 步骤2: 已根据您的偏好筛选，保留 {len(funds_df)} 只基金。")
+        print(f"    筛选类型: {', '.join(FUND_TYPE_FILTER)}")
+    elif FUND_TYPE_FILTER != '全部':
         funds_df = funds_df[funds_df['type'] == FUND_TYPE_FILTER].copy()
         print(f">>> 步骤2: 已根据您的偏好筛选，保留 {len(funds_df)} 只{FUND_TYPE_FILTER}基金。")
     

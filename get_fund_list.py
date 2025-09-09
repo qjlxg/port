@@ -39,9 +39,9 @@ def fetch_web_data(url):
 
 def get_fund_list():
     """
-    从天天基金网抓取所有开放式基金代码，并保存到文件。
+    从天天基金网抓取所有场外基金信息（代码、名称、类型等），并保存到 CSV 文件。
     """
-    print("正在从天天基金网获取基金列表，请稍候...")
+    print("正在从天天基金网获取场外基金列表，请稍候...")
     # 天天基金网的基金数据 API
     url = 'http://fund.eastmoney.com/js/fundcode_search.js'
     data = fetch_web_data(url)
@@ -55,15 +55,25 @@ def get_fund_list():
         json_str = re.search(r'var r = (\[.*?\]);', data).group(1)
         fund_list = json.loads(json_str)
 
-        # 提取基金代码（每个元素是一个列表，第一个元素是基金代码）
-        fund_codes = [fund[0] for fund in fund_list if re.match(r'^\d{6}$', fund[0])]
+        # 筛选场外基金：排除类型包含 'ETF'、'LOF' 或 '场内' 的基金
+        off_exchange_funds = [
+            fund for fund in fund_list 
+            if re.match(r'^\d{6}$', fund[0])  # 确保代码是6位数字
+            and 'ETF' not in fund[2] 
+            and 'LOF' not in fund[2] 
+            and '场内' not in fund[2]
+        ]
 
-        # 保存到文件
-        with open('fund_codes.txt', 'w', encoding='utf-8') as f:
-            for code in fund_codes:
-                f.write(code + '\n')
+        if not off_exchange_funds:
+            print("未找到任何场外基金。")
+            return False
 
-        print(f"成功获取 {len(fund_codes)} 个基金代码，并已保存到 fund_codes.txt 文件中。")
+        # 使用 pandas 保存所有字段到 CSV
+        columns = ['代码', '简称', '类型', '拼音', '全称']
+        df = pd.DataFrame(off_exchange_funds, columns=columns)
+        df.to_csv('fund_codes.csv', index=False, encoding='utf-8-sig')  # 使用 utf-8-sig 以支持 Excel 查看
+
+        print(f"成功获取 {len(off_exchange_funds)} 个场外基金信息，并已保存到 fund_codes.csv 文件中。")
         return True
     except Exception as e:
         print(f"解析数据或保存文件时发生错误: {e}")

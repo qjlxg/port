@@ -3,11 +3,15 @@ name: Fund Screener Workflow
 on:
   push:
     branches: [ main ] # 推送至 main 分支时触发
+    paths: # 仅在以下文件变更时触发
+      - 'fund_screener.py'
+      - '.github/workflows/fund_screener.yml'
   workflow_dispatch: # 允许手动触发
 
 jobs:
   run-screener:
     runs-on: ubuntu-latest # 使用最新 Ubuntu 环境
+    timeout-minutes: 60 # 设置最大运行时间为 60 分钟
 
     steps:
     - name: Checkout repository # 获取仓库代码
@@ -17,21 +21,35 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.10' # Python 3.10
+        cache: 'pip' # 缓存 pip 依赖，加速安装
 
     - name: Install dependencies # 安装所需库
       run: |
         python -m pip install --upgrade pip
-        pip install requests pandas numpy urllib3 aiohttp
-        pip install beautifulsoup4
-        pip install lxml
+        pip install requests pandas numpy lxml urllib3 aiohttp
+
+    - name: Create cache directory # 创建缓存目录
+      run: mkdir -p cache
 
     - name: Run fund screener script # 运行筛选脚本
-      run: python fund_screener.py
+      run: |
+        python fund_screener.py | tee screener_output.log
+      continue-on-error: true # 允许脚本失败继续运行以保存日志
 
-    - name: Commit and push results # 提交结果文件
+    - name: Commit and push results # 提交结果文件和缓存
       run: |
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        git add recommended_cn_funds.csv debug_fund_metrics.csv
-        git commit -m "Automated: Update qualified funds list and debug info" || echo "No changes to commit"
+        git add recommended_cn_funds.csv debug_fund_metrics.csv cache/ screener_output.log
+        git commit -m "Automated: Update qualified funds list, debug info, cache, and logs" || echo "No changes to commit"
         git push
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 确保推送权限
+
+    - name: Archive logs # 存档日志文件
+      if: always() # 无论成功或失败都存档
+      uses: actions/upload-artifact@v4
+      with:
+        name: screener-logs
+        path: screener_output.log
+        retention-days: 7 # 保留 7 天

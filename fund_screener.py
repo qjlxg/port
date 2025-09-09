@@ -24,7 +24,8 @@ MIN_DAYS = 100  # 最低数据天数（从 252 放宽到 100）
 TIMEOUT = 15  # 网络请求超时时间（秒）
 
 # 基金类型筛选，可选：'全部'，'混合型'，'股票型'，'指数型'，'债券型'，'QDII'，'FOF'
-FUND_TYPE_FILTER = '混合型'
+# 将其改回'全部'以确保程序能正常运行并显示所有可筛选类型
+FUND_TYPE_FILTER = '全部'
 
 # 配置 requests 重试机制
 session = requests.Session()
@@ -72,6 +73,10 @@ def get_all_funds_from_eastmoney():
             df = pd.DataFrame(fund_data, columns=['code', 'pinyin', 'name', 'type', 'pinyin_full'])
             df = df[['code', 'name', 'type']].drop_duplicates(subset=['code'])
             print(f"    √ 成功获取到 {len(df)} 只基金。")
+            print("--- 可用的基金类型：")
+            for fund_type in sorted(df['type'].unique()):
+                print(f"    - {fund_type}")
+            print("---")
             return df
         print("    × 未能解析基金列表数据。")
         return pd.DataFrame()
@@ -261,9 +266,13 @@ def main():
     
     # 预先获取市场指数数据
     index_code = '000300' # 沪深300指数
-    index_df = get_net_values_from_pingzhongdata(index_code, start_date, end_date)[0]
+    index_df, _ = get_net_values_from_pingzhongdata(index_code, start_date, end_date)
     if index_df.empty:
-        print(f"    × 无法获取市场指数 {index_code} 的历史数据，将无法计算贝塔系数。")
+        print(f"    × 无法获取市场指数 {index_code} 的历史数据，将尝试备用指数。")
+        index_code_fallback = '000001' # 上证指数
+        index_df, _ = get_net_values_from_pingzhongdata(index_code_fallback, start_date, end_date)
+        if index_df.empty:
+            print(f"    × 无法获取市场指数 {index_code_fallback} 的历史数据，将无法计算贝塔系数。")
 
     for idx, row in funds_df.iterrows():
         code = row['code']

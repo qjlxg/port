@@ -60,12 +60,19 @@ async def get_holdings_info(session: aiohttp.ClientSession, code: str) -> Tuple[
         soup = BeautifulSoup(html, 'lxml')
         top_10_stocks = []
         
-        table = soup.find('table', class_='w782')
+        # 优化解析逻辑：使用更全面的类名来定位表格
+        table = soup.find('table', class_='w782 comm tznzt')
+        if not table:
+            # 如果找不到comm tznzt，尝试只用w782
+            table = soup.find('table', class_='w782')
+
         if table:
-            rows = table.find('tbody').find_all('tr')
+            # 找到所有的行
+            rows = table.find_all('tr')
             for row in rows:
                 cols = row.find_all('td')
                 if len(cols) >= 4:
+                    # 确保提取的是股票名称和占比
                     stock_name = cols[1].get_text(strip=True)
                     proportion = cols[3].get_text(strip=True)
                     top_10_stocks.append(f"{stock_name}({proportion})")
@@ -74,6 +81,7 @@ async def get_holdings_info(session: aiohttp.ClientSession, code: str) -> Tuple[
         if not holdings_str:
             holdings_str = "无持仓数据"
         
+        # 使用 string 参数来消除警告，并尝试多种文本以提高成功率
         date_span = soup.find('span', string=re.compile(r'截止至：|截止日期：'))
         update_date = date_span.next_sibling.strip() if date_span and date_span.next_sibling else "N/A"
         

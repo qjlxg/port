@@ -39,7 +39,8 @@ def fetch_web_data(url):
 
 def get_fund_list():
     """
-    从天天基金网抓取所有场外基金信息（代码、名称、类型等），并保存到 CSV 文件。
+    从天天基金网抓取所有场外基金信息（代码、名称、类型等），
+    保存基金代码到 fund_codes.txt，保存所有字段到 fund_codes.csv。
     """
     print("正在从天天基金网获取场外基金列表，请稍候...")
     # 天天基金网的基金数据 API
@@ -68,12 +69,18 @@ def get_fund_list():
             print("未找到任何场外基金。")
             return False
 
-        # 使用 pandas 保存所有字段到 CSV
+        # 保存基金代码到 fund_codes.txt
+        with open('fund_codes.txt', 'w', encoding='utf-8') as f:
+            for fund in off_exchange_funds:
+                f.write(fund[0] + '\n')
+
+        # 使用 pandas 保存所有字段到 fund_codes.csv
         columns = ['代码', '简称', '类型', '拼音', '全称']
         df = pd.DataFrame(off_exchange_funds, columns=columns)
         df.to_csv('fund_codes.csv', index=False, encoding='utf-8-sig')  # 使用 utf-8-sig 以支持 Excel 查看
 
-        print(f"成功获取 {len(off_exchange_funds)} 个场外基金信息，并已保存到 fund_codes.csv 文件中。")
+        print(f"成功获取 {len(off_exchange_funds)} 个场外基金信息，"
+              f"已保存代码到 fund_codes.txt，所有字段到 fund_codes.csv。")
         return True
     except Exception as e:
         print(f"解析数据或保存文件时发生错误: {e}")

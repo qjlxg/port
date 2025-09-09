@@ -23,6 +23,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install requests pandas numpy urllib3
         pip install beautifulsoup4
+        pip install lxml
 
     - name: Run fund screener script # 运行筛选脚本
       run: python fund_screener.py

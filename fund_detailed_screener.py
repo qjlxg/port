@@ -20,7 +20,8 @@ async def fetch_web_data_async(session: aiohttp.ClientSession, url: str) -> Tupl
     """通用异步网页数据抓取函数"""
     headers = {'User-Agent': random.choice(USER_AGENTS)}
     try:
-        async with session.get(url, headers=headers, timeout=15) as response:
+        # 增加超时时间
+        async with session.get(url, headers=headers, timeout=30) as response:
             response.raise_for_status()
             return await response.text(), None
     except aiohttp.ClientError as e:
@@ -36,15 +37,12 @@ async def get_manager_info(session: aiohttp.ClientSession, code: str) -> Tuple[O
         return None, None, None, error
     
     try:
-        # 基金经理姓名
         manager_match = re.search(r'基金经理：<a.*?>(.*?)</a>', html, re.DOTALL)
         manager_name = manager_match.group(1).strip() if manager_match else 'N/A'
 
-        # 从业年限
         tenure_match = re.search(r'从业年限：<span>(.*?)年', html)
         tenure_years = float(tenure_match.group(1)) if tenure_match else 0.0
 
-        # 现任基金数量
         fund_count_match = re.search(r'现任基金数：<span>(.*?)只', html)
         fund_count = int(fund_count_match.group(1)) if fund_count_match else 0
         
@@ -54,6 +52,7 @@ async def get_manager_info(session: aiohttp.ClientSession, code: str) -> Tuple[O
 
 async def get_holdings_info(session: aiohttp.ClientSession, code: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """异步获取前十大持仓信息"""
+    # 修正后的URL，确保使用正确的域名和路径
     url = f"http://fund.eastmoney.com/f10/FundHoldings.html?fundCode={code}"
     html, error = await fetch_web_data_async(session, url)
     if error:
@@ -63,7 +62,6 @@ async def get_holdings_info(session: aiohttp.ClientSession, code: str) -> Tuple[
         soup = BeautifulSoup(html, 'lxml')
         top_10_stocks = []
         
-        # 使用 BeautifulSoup 定位表格
         table = soup.find('table', class_='w782')
         if table:
             rows = table.find('tbody').find_all('tr')
@@ -78,7 +76,6 @@ async def get_holdings_info(session: aiohttp.ClientSession, code: str) -> Tuple[
         if not holdings_str:
             holdings_str = "无持仓数据"
         
-        # 匹配更新日期
         date_span = soup.find('span', text=re.compile(r'截止日期：'))
         update_date = date_span.next_sibling.strip() if date_span and date_span.next_sibling else "N/A"
         
@@ -89,19 +86,19 @@ async def get_holdings_info(session: aiohttp.ClientSession, code: str) -> Tuple[
 async def process_fund_details(fund: Dict[str, Any], session: aiohttp.ClientSession, semaphore: asyncio.Semaphore) -> Optional[Dict[str, Any]]:
     """处理单个基金的详细信息抓取"""
     async with semaphore:
-        code = fund['基金代码']
-        print(f"正在获取基金 {code} 的详细信息...", flush=True)
+        # 将基金代码格式化为6位字符串，以防止前面0丢失
+        code_str = str(fund['基金代码']).zfill(6)
+        print(f"正在获取基金 {code_str} 的详细信息...", flush=True)
 
-        # 在每次请求前随机等待，模拟人类行为
         await asyncio.sleep(random.uniform(1, 3))
 
-        manager_name, tenure_years, fund_count, manager_error = await get_manager_info(session, code)
+        manager_name, tenure_years, fund_count, manager_error = await get_manager_info(session, code_str)
         if manager_error:
-            print(f"基金 {code} 基金经理信息获取失败: {manager_error}", flush=True)
+            print(f"基金 {code_str} 基金经理信息获取失败: {manager_error}", flush=True)
 
-        holdings_str, update_date, holdings_error = await get_holdings_info(session, code)
+        holdings_str, update_date, holdings_error = await get_holdings_info(session, code_str)
         if holdings_error:
-            print(f"基金 {code} 持仓信息获取失败: {holdings_error}", flush=True)
+            print(f"基金 {code_str} 持仓信息获取失败: {holdings_error}", flush=True)
 
         fund['基金经理'] = manager_name
         fund['从业年限 (年)'] = tenure_years
@@ -113,21 +110,19 @@ async def process_fund_details(fund: Dict[str, Any], session: aiohttp.ClientSess
 
 async def main():
     try:
-        df_funds = pd.read_csv('recommended_cn_funds.csv')
+        df_funds = pd.read_csv('recommended_cn_funds.csv', dtype={'基金代码': str})
     except FileNotFoundError:
         print("错误：未找到文件 recommended_cn_funds.csv。请先运行 fund_screener.py", flush=True)
         return
 
     print(f"已加载 {len(df_funds)} 只基金，开始获取详细信息。", flush=True)
 
-    # 降低并发数，减少被封禁的风险
     semaphore = asyncio.Semaphore(5)
     
     conn = aiohttp.TCPConnector(limit=5)
     async with aiohttp.ClientSession(connector=conn) as session:
         tasks = [process_fund_details(fund.to_dict(), session, semaphore) for _, fund in df_funds.iterrows()]
         
-        # 捕获所有任务的异常
         enriched_funds = await asyncio.gather(*tasks, return_exceptions=True)
         
     final_results = [item for item in enriched_funds if not isinstance(item, Exception)]

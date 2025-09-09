@@ -39,13 +39,15 @@ async def fetch_web_data_async(session, url):
     """通用网页数据抓取函数，带随机UA和重试"""
     headers = {'User-Agent': get_random_user_agent()}
     retries = 3
+    e = None  # 初始化 'e' 变量
     for i in range(retries):
         try:
             async with session.get(url, headers=headers, timeout=10) as response:
                 response.raise_for_status()
                 return await response.text(), None
-        except aiohttp.ClientError as e:
-            await asyncio.sleep(random.uniform(1, 3)) # 失败后随机延时重试
+        except aiohttp.ClientError as exc:
+            e = exc  # 将异常赋值给 e
+            await asyncio.sleep(random.uniform(1, 3))  # 失败后随机延时重试
     return None, f"请求失败，已重试 {retries} 次: {e}"
 
 async def get_fund_history_data(session, code):
@@ -241,11 +243,20 @@ async def main_async():
     conn = aiohttp.TCPConnector(ssl=False, limit=None)
     async with aiohttp.ClientSession(connector=conn) as session:
         tasks = [process_single_fund(session, code, semaphore) for code in otc_fund_list]
-        for i, task in enumerate(asyncio.as_completed(tasks)):
-            result, debug_info = await task
-            if result:
-                results.append(result)
-            debug_data.append(debug_info)
+        
+        processed_results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for i, res in enumerate(processed_results):
+            if isinstance(res, Exception):
+                # 处理未预料的异常，例如会话关闭等
+                print(f"任务 {otc_fund_list[i]} 遇到异常: {res}")
+                debug_data.append({'基金代码': otc_fund_list[i], '失败原因': f'未处理异常: {res}'})
+            else:
+                result, debug_info = res
+                if result:
+                    results.append(result)
+                debug_data.append(debug_info)
+
             # 打印进度
             if (i + 1) % 100 == 0 or (i + 1) == len(otc_fund_list):
                 print(f"处理进度：{i+1}/{len(otc_fund_list)} 个基金已完成。")

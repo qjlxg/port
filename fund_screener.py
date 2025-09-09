@@ -61,7 +61,7 @@ def get_all_funds_from_eastmoney():
     """
     动态从天天基金网获取全市场基金列表。
     """
-    print(">>> 步骤1: 正在动态获取全市场基金列表...")
+    print(">>> 步骤1: 正在动态获取全市场基金列表...", flush=True)
     url = "http://fund.eastmoney.com/js/fundcode_search.js"
     headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': 'http://fund.eastmoney.com/'}
     try:
@@ -73,16 +73,16 @@ def get_all_funds_from_eastmoney():
             fund_data = json.loads(match.group(1))
             df = pd.DataFrame(fund_data, columns=['code', 'pinyin', 'name', 'type', 'pinyin_full'])
             df = df[['code', 'name', 'type']].drop_duplicates(subset=['code'])
-            print(f"    √ 成功获取到 {len(df)} 只基金。")
-            print("--- 可用的基金类型：")
+            print(f"    √ 成功获取到 {len(df)} 只基金。", flush=True)
+            print("--- 可用的基金类型：", flush=True)
             for fund_type in sorted(df['type'].unique()):
-                print(f"    - {fund_type}")
-            print("---")
+                print(f"    - {fund_type}", flush=True)
+            print("---", flush=True)
             return df
-        print("    × 未能解析基金列表数据。")
+        print("    × 未能解析基金列表数据。", flush=True)
         return pd.DataFrame()
     except requests.exceptions.RequestException as e:
-        print(f"    × 获取基金列表失败: {e}")
+        print(f"    × 获取基金列表失败: {e}", flush=True)
         return pd.DataFrame()
 
 # 步骤 2: 获取历史净值（主备双重保险）
@@ -294,55 +294,55 @@ def analyze_holdings(holdings):
 
 # 主函数
 def main():
-    print(">>> 程序启动：正在初始化基金筛选工具...")
+    print(">>> 程序启动：正在初始化基金筛选工具...", flush=True)
     start_time = time.time()
     end_date = datetime.now().strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=3 * 365)).strftime('%Y-%m-%d')
 
     funds_df = get_all_funds_from_eastmoney()
     if funds_df.empty:
-        print("无法获取基金列表，程序退出。")
+        print("无法获取基金列表，程序退出。", flush=True)
         return
 
     # 基金类型筛选
     if isinstance(FUND_TYPE_FILTER, list) and FUND_TYPE_FILTER:
         funds_df = funds_df[funds_df['type'].isin(FUND_TYPE_FILTER)].copy()
-        print(f">>> 步骤2: 已根据您的偏好筛选，保留 {len(funds_df)} 只基金。")
-        print(f"    筛选类型: {', '.join(FUND_TYPE_FILTER)}")
+        print(f">>> 步骤2: 已根据您的偏好筛选，保留 {len(funds_df)} 只基金。", flush=True)
+        print(f"    筛选类型: {', '.join(FUND_TYPE_FILTER)}", flush=True)
     elif FUND_TYPE_FILTER != '全部':
         funds_df = funds_df[funds_df['type'] == FUND_TYPE_FILTER].copy()
-        print(f">>> 步骤2: 已根据您的偏好筛选，保留 {len(funds_df)} 只{FUND_TYPE_FILTER}基金。")
+        print(f">>> 步骤2: 已根据您的偏好筛选，保留 {len(funds_df)} 只{FUND_TYPE_FILTER}基金。", flush=True)
     
-    print(">>> 步骤3: 正在逐一处理基金数据并进行筛选...")
+    print(">>> 步骤3: 正在逐一处理基金数据并进行筛选...", flush=True)
     results = []
     
     # 预先获取市场指数数据
     index_code = '000300' # 沪深300指数
     index_df, _ = get_net_values_from_pingzhongdata(index_code, start_date, end_date)
     if index_df.empty:
-        print(f"    × 无法获取市场指数 {index_code} 的历史数据，将尝试备用指数。")
+        print(f"    × 无法获取市场指数 {index_code} 的历史数据，将尝试备用指数。", flush=True)
         index_code_fallback = '000001' # 上证指数
         index_df, _ = get_net_values_from_pingzhongdata(index_code_fallback, start_date, end_date)
         if index_df.empty:
-            print(f"    × 无法获取市场指数 {index_code_fallback} 的历史数据，将无法计算贝塔系数。")
+            print(f"    × 无法获取市场指数 {index_code_fallback} 的历史数据，将无法计算贝塔系数。", flush=True)
 
     for idx, row in funds_df.iterrows():
         code = row['code']
         name = row['name']
         
-        print(f"\n    正在处理基金 {idx+1}/{len(funds_df)}: {name} ({code})...")
+        print(f"\n    正在处理基金 {idx+1}/{len(funds_df)}: {name} ({code})...", flush=True)
 
         # 获取历史净值数据
         net_df, latest_net_value, data_source = get_fund_net_values(code, start_date, end_date)
         
         if net_df.empty:
-            print(f"    跳过：净值数据不足。")
+            print(f"    跳过：净值数据不足。", flush=True)
             continue
 
         # 计算指标
         metrics = calculate_metrics(net_df, start_date, end_date, index_df)
         if metrics is None:
-            print(f"    跳过：数据不足 {MIN_DAYS} 天（仅有 {len(net_df)} 天）。")
+            print(f"    跳过：数据不足 {MIN_DAYS} 天（仅有 {len(net_df)} 天）。", flush=True)
             continue
 
         # 获取管理费和实时估值
@@ -370,9 +370,9 @@ def main():
             score = (0.6 * (metrics['annual_return'] / 20) + 0.3 * metrics['sharpe'] + 0.1 * (2 - fee))
             result['综合评分'] = round(score, 2)
             results.append(result)
-            print(f"    √ 通过筛选，评分: {result['综合评分']:.2f}")
+            print(f"    √ 通过筛选，评分: {result['综合评分']:.2f}", flush=True)
         else:
-            print("    × 未通过筛选。")
+            print("    × 未通过筛选。", flush=True)
 
     # 输出结果并获取持仓信息
     if results:
@@ -380,36 +380,36 @@ def main():
         final_df = final_df.reset_index(drop=True)
         final_df.index = final_df.index + 1
         
-        print("\n--- 步骤4: 筛选完成，开始输出推荐基金列表 ---")
-        print(final_df)
+        print("\n--- 步骤4: 筛选完成，开始输出推荐基金列表 ---", flush=True)
+        print(final_df, flush=True)
         final_df.to_csv('recommended_cn_funds.csv', index=True, index_label='排名', encoding='utf-8-sig')
-        print("\n>>> 推荐结果已保存至 recommended_cn_funds.csv 文件。")
+        print("\n>>> 推荐结果已保存至 recommended_cn_funds.csv 文件。", flush=True)
 
         for idx, row in final_df.iterrows():
             code = row['基金代码']
             name = row['基金名称']
             
-            print(f"\n--- 正在分析基金 {name} ({code}) 的持仓详情 ---")
+            print(f"\n--- 正在分析基金 {name} ({code}) 的持仓详情 ---", flush=True)
             
             holdings = get_fund_holdings(code)
             
             if holdings:
-                print(f"    √ 成功获取到最新十大持仓。")
-                print("      - 持仓股票:")
+                print(f"    √ 成功获取到最新十大持仓。", flush=True)
+                print("      - 持仓股票:", flush=True)
                 for holding in holdings:
-                    print(f"        股票名称: {holding.get('name', 'N/A')}, 股票代码: {holding.get('code', 'N/A')}, 占比: {holding.get('ratio', 'N/A')}")
+                    print(f"        股票名称: {holding.get('name', 'N/A')}, 股票代码: {holding.get('code', 'N/A')}, 占比: {holding.get('ratio', 'N/A')}", flush=True)
                 
                 industry_df, concentration = analyze_holdings(holdings)
-                print(f"\n      - 行业分析:")
-                print(industry_df.to_string(index=False))
-                print(f"        行业集中度（前三大行业占比）: {concentration:.2f}%")
+                print(f"\n      - 行业分析:", flush=True)
+                print(industry_df.to_string(index=False), flush=True)
+                print(f"        行业集中度（前三大行业占比）: {concentration:.2f}%", flush=True)
             else:
-                print(f"    × 未能获取到最新持仓数据。")
+                print(f"    × 未能获取到最新持仓数据。", flush=True)
     else:
-        print("\n没有找到符合条件的基金，建议调整筛选条件。")
+        print("\n没有找到符合条件的基金，建议调整筛选条件。", flush=True)
         
     end_time = time.time()
-    print(f"\n>>> 整个程序执行完毕，耗时: {(end_time - start_time):.2f} 秒。")
+    print(f"\n>>> 整个程序执行完毕，耗时: {(end_time - start_time):.2f} 秒。", flush=True)
 
 if __name__ == "__main__":
     main()

@@ -24,7 +24,7 @@ MIN_DAYS = 100  # 最低数据天数（从 252 放宽到 100）
 TIMEOUT = 15  # 网络请求超时时间（秒）
 
 # 基金类型筛选，可选：'全部'，'混合型'，'股票型'，'指数型'，'债券型'，'QDII'，'FOF'
-FUND_TYPE_FILTER = '全部'
+FUND_TYPE_FILTER = '混合型'
 
 # 配置 requests 重试机制
 session = requests.Session()
@@ -241,6 +241,7 @@ def analyze_holdings(holdings):
 
 # 主函数
 def main():
+    print(">>> 程序启动：正在初始化基金筛选工具...")
     start_time = time.time()
     end_date = datetime.now().strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=3 * 365)).strftime('%Y-%m-%d')

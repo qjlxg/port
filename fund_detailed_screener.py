@@ -79,7 +79,7 @@ async def get_holdings_info(session: aiohttp.ClientSession, code: str) -> Tuple[
             holdings_str = "无持仓数据"
         
         # 匹配更新日期
-        date_span = soup.find('span', text=re.compile(r'截止日期：'))
+        date_span = soup.find('span', string=re.compile(r'截止日期：'))
         update_date = date_span.next_sibling.strip() if date_span and date_span.next_sibling else "N/A"
         
         return holdings_str, update_date, None

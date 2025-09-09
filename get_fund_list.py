@@ -3,6 +3,7 @@ import requests
 from io import StringIO
 import re
 import random
+import time
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -52,7 +53,24 @@ def get_fund_list():
     try:
         # 使用 pandas 解析 HTML 表格
         df = pd.read_html(StringIO(html), header=0, encoding='utf-8')[0]
-        fund_codes = df['基金代码'].astype(str).loc[df['基金代码'].astype(str).str.match(r'^\d{6}$')]
+        
+        # 打印所有列名，方便调试
+        print("网页表格中的所有列名：", df.columns.tolist())
+        
+        # 尝试通过列名模糊匹配找到基金代码列
+        code_col = None
+        for col in df.columns:
+            if '代码' in col or 'code' in col.lower():
+                code_col = col
+                break
+        
+        # 如果找不到包含'代码'的列名，则假设第一列是基金代码
+        if not code_col:
+            print("警告：未能找到包含'代码'的列名，默认为第一列。")
+            code_col = df.columns[0]
+        
+        # 提取基金代码列，并进行筛选（确保是6位数字）
+        fund_codes = df[code_col].astype(str).loc[df[code_col].astype(str).str.match(r'^\d{6}$')]
         
         with open('fund_codes.txt', 'w', encoding='utf-8') as f:
             for code in fund_codes:

@@ -26,9 +26,10 @@ jobs:
     - name: Install dependencies # 安装所需库
       run: |
         python -m pip install --upgrade pip
-        pip install requests pandas numpy lxml urllib3 aiohttp eautifulsoup4
+        pip install requests pandas numpy lxml urllib3 aiohttp 
         pip install akshare
-
+        pip install beautifulsoup4
+        
     - name: Create cache directory # 创建缓存目录
       run: mkdir -p cache
 

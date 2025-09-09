@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 MIN_RETURN = 3.0
 MAX_VOLATILITY = 25.0
 MIN_SHARPE = 0.2
-MAX_FEE = 3.5
+MAX_FEE = 2.5
 RISK_FREE_RATE = 3.0
 MIN_DAYS = 100
 BATCH_SIZE = 1000
@@ -278,9 +278,11 @@ def main():
     if not os.path.exists('cache'):
         os.makedirs('cache')
 
-   # fund_list = load_fund_list()
-   # 硬编码你想要测试的热门基金代码
-   fund_list = [
+    # 注释掉从文件中读取的代码
+    # fund_list = load_fund_list()
+
+    # 硬编码你想要测试的热门基金代码
+    fund_list = [
         '001211', '005827', '008285', '001071', '003095',
         '005911', '001186', '001476', '004851', '009477',
         '009653', '008104', '008763', '001210', '001550',

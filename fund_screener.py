@@ -255,7 +255,7 @@ def get_fund_fee(code):
 # 步骤 5: 获取基金持仓信息
 def get_fund_holdings(code):
     """
-    从天天基金网获取基金持仓信息和更新日期。
+    从天天基金网获取基金最新持仓信息和更新日期。
     """
     url = f"http://fund.eastmoney.com/DataCenter/Fund/JJZCHoldDetail.aspx?fundCode={code}"
     headers = {
@@ -292,6 +292,53 @@ def get_fund_holdings(code):
         return [], 'N/A'
     except Exception:
         return [], 'N/A'
+
+# 新增函数: 获取基金历史持仓信息
+def get_fund_historical_holdings(code):
+    """
+    从天天基金网获取基金历史持仓信息。
+    """
+    url = f"https://fundf10.eastmoney.com/ccmx_{code}.html"
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'https://fundf10.eastmoney.com/ccmx_{code}.html'
+    }
+    try:
+        response = session.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        historical_data = {}
+        # 查找所有季度报告的表格
+        report_sections = soup.find_all('div', class_='boxitem')
+        
+        for section in report_sections:
+            title_tag = section.find('h4', class_='title')
+            if not title_tag:
+                continue
+            
+            report_date = title_tag.text.strip().replace('基金持仓', '').replace('前十持仓', '').strip()
+            
+            holdings = []
+            table = section.find('table')
+            if table:
+                for row in table.find_all('tr')[1:]:
+                    cells = row.find_all('td')
+                    if len(cells) >= 4:
+                        holdings.append({
+                            'name': cells[1].text.strip(),
+                            'code': cells[2].text.strip(),
+                            'ratio': cells[3].text.strip()
+                        })
+            
+            if holdings:
+                historical_data[report_date] = holdings
+        return historical_data
+        
+    except requests.exceptions.RequestException:
+        return {}
+    except Exception:
+        return {}
 
 # 新增函数: 计算贝塔系数
 def calculate_beta(fund_df, index_df):
@@ -380,7 +427,7 @@ def main():
         name = row['name']
         
         # 优化打印，每处理10只基金打印一次，避免日志过长
-        if idx % 10 == 0:
+        if (idx + 1) % 10 == 0:
              print(f"\n正在处理第 {idx+1}/{len(funds_df)} 只基金: {name} ({code})")
 
         # 获取历史净值数据
@@ -489,8 +536,10 @@ def main():
             code = row['基金代码']
             name = row['基金名称']
             
-            holdings, update_date = get_fund_holdings(code)
+            print(f"\n--- 正在获取基金 {name} ({code}) 的持仓详情 ---")
             
+            # 获取最新持仓
+            latest_holdings, update_date = get_fund_holdings(code)
             is_outdated = 'N/A'
             if update_date != 'N/A':
                 try:
@@ -501,14 +550,24 @@ def main():
                         is_outdated = '最新'
                 except ValueError:
                     is_outdated = '日期格式错误'
-
-            if holdings:
-                print(f"\n--- 基金 {name} ({code}) 持仓详情 ---")
-                print(f"    - 持仓更新日期: {update_date} ({is_outdated})")
-                for holding in holdings:
+            
+            if latest_holdings:
+                print(f"    - 最新持仓更新日期: {update_date} ({is_outdated})")
+                for holding in latest_holdings:
                     print(f"      - 股票名称: {holding.get('name', 'N/A')}, 占比: {holding.get('ratio', 'N/A')}")
             else:
-                print(f"\n--- 基金 {name} ({code}) 未能获取到持仓数据 ---")
+                print(f"    - 未能获取到最新持仓数据。")
+            
+            # 获取历史持仓
+            historical_data = get_fund_historical_holdings(code)
+            if historical_data:
+                print(f"    - 历史持仓数据:")
+                for date, holdings_list in historical_data.items():
+                    print(f"        - {date} 持仓:")
+                    for holding in holdings_list:
+                         print(f"          - 股票名称: {holding.get('name', 'N/A')}, 占比: {holding.get('ratio', 'N/A')}")
+            else:
+                print(f"    - 未能获取到历史持仓数据。")
             
             print("-" * 50)
             time.sleep(random.uniform(2, 5)) # 随机延时 2-5 秒

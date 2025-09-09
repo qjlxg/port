@@ -32,7 +32,8 @@ def fetch_web_data(url):
     try:
         response = session.get(url, headers=headers, timeout=10)
         response.raise_for_status()
-        return response.text
+        # 直接返回 bytes 内容，让调用者指定编码
+        return response.content
     except requests.exceptions.RequestException as e:
         print(f"请求失败: {e}")
         return None
@@ -45,14 +46,17 @@ def get_fund_list():
     从天天基金网抓取所有开放式基金代码，并保存到文件。
     """
     print("正在从天天基金网获取基金列表，请稍候...")
-    html = fetch_web_data(URL)
-    if not html:
+    html_content = fetch_web_data(URL)
+    if not html_content:
         print("获取基金列表失败。")
         return False
     
     try:
+        # 使用gbk编码解码网页内容
+        html_str = html_content.decode('gbk')
+        
         # 使用 pandas 解析 HTML 表格
-        df = pd.read_html(StringIO(html), header=0, encoding='utf-8')[0]
+        df = pd.read_html(StringIO(html_str), header=0, encoding='gbk')[0]
         
         # 打印所有列名，方便调试
         print("网页表格中的所有列名：", df.columns.tolist())

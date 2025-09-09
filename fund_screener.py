@@ -14,15 +14,15 @@ from requests.exceptions import RequestException
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 筛选条件
-MIN_RETURN = 3.0  # 年化收益率 ≥ 3%
-MAX_VOLATILITY = 25.0  # 波动率 ≤ 25%
-MIN_SHARPE = 0.2  # 夏普比率 ≥ 0.2
-MAX_FEE = 2.5  # 管理费 ≤ 2.5%
-RISK_FREE_RATE = 3.0  # 无风险利率 3%
-MIN_DAYS = 100  # 最低数据天数
-BATCH_SIZE = 1000  # 每批处理基金数量
-MAX_WORKERS = 10  # 并行线程数
-CACHE_DAYS = 1  # 缓存有效期（天）
+MIN_RETURN = 3.0
+MAX_VOLATILITY = 25.0
+MIN_SHARPE = 0.2
+MAX_FEE = 2.5
+RISK_FREE_RATE = 3.0
+MIN_DAYS = 100
+BATCH_SIZE = 1000
+MAX_WORKERS = 10
+CACHE_DAYS = 1
 
 # 配置 requests 重试机制
 session = requests.Session()
@@ -44,7 +44,6 @@ def get_random_user_agent():
     return random.choice(USER_AGENTS)
 
 def fetch_web_data(url, proxies=None):
-    """通用网页数据抓取函数，带随机UA和重试"""
     headers = {'User-Agent': get_random_user_agent()}
     try:
         response = session.get(url, headers=headers, timeout=10, proxies=proxies)
@@ -54,7 +53,6 @@ def fetch_web_data(url, proxies=None):
         return None, f"请求失败: {e}"
 
 def load_cache(file_path, max_age_days=CACHE_DAYS):
-    """加载缓存数据"""
     if not os.path.exists(file_path):
         return None
     if (datetime.now() - datetime.fromtimestamp(os.path.getmtime(file_path))) > timedelta(days=max_age_days):
@@ -66,14 +64,12 @@ def load_cache(file_path, max_age_days=CACHE_DAYS):
         return None
 
 def save_cache(df, file_path):
-    """保存缓存数据"""
     try:
         df.to_csv(file_path, index=False, encoding='utf-8-sig')
     except Exception as e:
         print(f"保存缓存 {file_path} 失败: {e}", flush=True)
 
 def get_fund_history_data(code):
-    """从天天基金网获取基金历史净值数据"""
     cache_file = f"cache/history_{code}.csv"
     cached_data = load_cache(cache_file)
     if cached_data is not None:
@@ -92,7 +88,7 @@ def get_fund_history_data(code):
 
     try:
         df = pd.read_html(StringIO(table_html), header=0, encoding='utf-8')[0]
-        df = df.iloc[::-1]  # 反转数据以按时间正序排列
+        df = df.iloc[::-1]
         df.columns = ['净值日期', '单位净值', '累计净值', '日增长率', '申购状态', '赎回状态', '分红送配']
         df['单位净值'] = pd.to_numeric(df['单位净值'], errors='coerce')
         df['累计净值'] = pd.to_numeric(df['累计净值'], errors='coerce')
@@ -103,7 +99,6 @@ def get_fund_history_data(code):
         return None, f"解析历史数据失败: {e}"
 
 def get_fund_realtime_info(code):
-    """从天天基金网获取基金实时估值和名称"""
     cache_file = f"cache/realtime_{code}.csv"
     cached_data = load_cache(cache_file)
     if cached_data is not None:
@@ -132,7 +127,6 @@ def get_fund_realtime_info(code):
         return None, None, None, None, f"获取实时数据失败: {e}"
 
 def get_fund_fee(code):
-    """获取基金管理费"""
     cache_file = f"cache/fee_{code}.csv"
     cached_data = load_cache(cache_file)
     if cached_data is not None:
@@ -156,7 +150,6 @@ def get_fund_fee(code):
         return None, f"解析管理费失败: {e}"
 
 def calculate_fund_metrics(df_history, risk_free_rate):
-    """计算基金的年化收益率、年化波动率和夏普比率"""
     if df_history is None or df_history.empty:
         return None, "无净值数据"
 
@@ -178,7 +171,6 @@ def calculate_fund_metrics(df_history, risk_free_rate):
     return metrics, None
 
 def load_fund_list(file_path='fund_codes.txt'):
-    """从文件中读取基金代码列表"""
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             return [line.strip() for line in f if line.strip()]
@@ -187,29 +179,42 @@ def load_fund_list(file_path='fund_codes.txt'):
         return []
 
 def is_otc_fund(code):
-    """判断基金代码是否为场外基金（通常以0开头）"""
     return code.startswith('0')
 
 def pre_screen_funds(fund_list):
-    """预筛选基金，仅保留管理费满足条件的基金"""
     valid_funds = []
     cache_file = 'cache/pre_screened_funds.csv'
     cached_data = load_cache(cache_file)
     if cached_data is not None:
         return cached_data['基金代码'].tolist()
 
-    for code in fund_list:
-        if is_otc_fund(code):
-            fee, error = get_fund_fee(code)
-            if not error and fee is not None and fee <= MAX_FEE:
-                valid_funds.append(code)
-            time.sleep(random.uniform(0.1, 0.3))
+    # 并行处理管理费筛选
+    def check_fund_fee(code):
+        if not is_otc_fund(code):
+            return None
+        fee, error = get_fund_fee(code)
+        time.sleep(random.uniform(0.2, 0.5))  # 增加延时
+        if not error and fee is not None and fee <= MAX_FEE:
+            return code
+        return None
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_code = {executor.submit(check_fund_fee, code): code for code in fund_list}
+        for future in as_completed(future_to_code):
+            code = future_to_code[future]
+            try:
+                result = future.result()
+                if result:
+                    valid_funds.append(result)
+                print(f"预筛选基金：{code} {'通过' if result else '未通过'}", flush=True)
+            except Exception as e:
+                print(f"预筛选基金 {code} 失败: {e}", flush=True)
+
     cache_df = pd.DataFrame({'基金代码': valid_funds})
     save_cache(cache_df, cache_file)
     return valid_funds
 
 def process_fund(code):
-    """处理单个基金的逻辑"""
     debug_info = {'基金代码': code}
     name, realtime_estimate, latest_net_value, data_source, realtime_error = get_fund_realtime_info(code)
     debug_info['基金名称'] = name
@@ -270,7 +275,6 @@ def process_fund(code):
         return None, debug_info
 
 def main():
-    # 创建缓存目录
     if not os.path.exists('cache'):
         os.makedirs('cache')
 
@@ -282,7 +286,6 @@ def main():
     otc_fund_list = pre_screen_funds(fund_list)
     print(f"预筛选后剩余 {len(otc_fund_list)} 个场外基金。", flush=True)
 
-    # 加载已处理的基金代码（断点续传）
     processed_codes_file = 'cache/processed_codes.csv'
     processed_codes = set(load_cache(processed_codes_file)['基金代码'].tolist()) if os.path.exists(processed_codes_file) else set()
 
@@ -290,7 +293,6 @@ def main():
     debug_data = []
     batch_results_files = []
 
-    # 分批处理
     for i in range(0, len(otc_fund_list), BATCH_SIZE):
         batch = otc_fund_list[i:i + BATCH_SIZE]
         batch = [code for code in batch if code not in processed_codes]
@@ -315,9 +317,8 @@ def main():
                 except Exception as e:
                     batch_debug.append({'基金代码': code, '失败原因': f'处理失败: {e}'})
                 print(f"完成处理基金：{code}", flush=True)
-                time.sleep(random.uniform(0.1, 0.3))
+                time.sleep(random.uniform(0.2, 0.5))
 
-        # 保存批次结果
         if batch_results:
             batch_df = pd.DataFrame(batch_results)
             batch_file = f'cache/recommended_cn_funds_batch_{i//BATCH_SIZE}.csv'
@@ -330,7 +331,6 @@ def main():
         results.extend(batch_results)
         debug_data.extend(batch_debug)
 
-    # 合并所有批次结果
     if results:
         final_df = pd.DataFrame(results).sort_values('综合评分', ascending=False)
         final_df.to_csv('recommended_cn_funds.csv', index=False, encoding='utf-8-sig')
@@ -340,7 +340,6 @@ def main():
     else:
         print("抱歉，没有找到符合筛选条件的基金。请尝试放宽筛选条件。", flush=True)
 
-    # 合并调试信息
     debug_df = pd.DataFrame(debug_data)
     debug_df.to_csv('debug_fund_metrics.csv', index=False, encoding='utf-8-sig')
     print("调试信息已保存至 debug_fund_metrics.csv", flush=True)

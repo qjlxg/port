@@ -9,6 +9,7 @@ import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from io import StringIO
+from requests.exceptions import RequestException
 
 # 筛选条件
 MIN_RETURN = 3.0  # 年化收益率 ≥ 3%
@@ -176,13 +177,17 @@ def main():
         
         name, realtime_estimate, latest_net_value, data_source, realtime_error = get_fund_realtime_info(code)
         if realtime_error:
+            # 修改了此处，当实时数据获取失败时，不中断，而是跳过
             debug_info['失败原因'] = realtime_error
             debug_data.append(debug_info)
-            print(f"基金 {code} - 实时数据获取失败: {realtime_error}", flush=True)
-            time.sleep(random.uniform(0.5, 1))
-            continue
-        
-        print(f"基金名称：{name}, 最新净值：{latest_net_value}, 实时估值：{round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A'}", flush=True)
+            print(f"基金 {code} - 实时数据获取失败: {realtime_error}。继续处理。", flush=True)
+            name = None
+            latest_net_value = None
+            realtime_estimate = None
+            data_source = None
+            
+        if name:
+            print(f"基金名称：{name}, 最新净值：{latest_net_value}, 实时估值：{round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A'}", flush=True)
         debug_info['基金名称'] = name
         debug_info['最新净值'] = latest_net_value
         debug_info['实时估值'] = round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A'

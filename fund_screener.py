@@ -33,7 +33,8 @@ async def fetch_web_data_async(session: aiohttp.ClientSession, url: str) -> Tupl
     """通用异步网页数据抓取函数"""
     headers = {'User-Agent': random.choice(USER_AGENTS)}
     try:
-        async with session.get(url, headers=headers, timeout=10) as response:
+        # Force HTTPS and port 443
+        async with session.get(url, headers=headers, ssl=True, timeout=10) as response:
             response.raise_for_status()
             return await response.text(), None
     except aiohttp.ClientError as e:
@@ -188,7 +189,8 @@ async def main():
 
     semaphore = asyncio.Semaphore(50)
     
-    conn = aiohttp.TCPConnector(limit=50)
+    # 强制使用 HTTPS 协议和 SSL 连接
+    conn = aiohttp.TCPConnector(limit=50, ssl=True)
     async with aiohttp.ClientSession(connector=conn) as session:
         tasks = [process_fund(code, session, semaphore) for code in fund_list]
         processed_data = await asyncio.gather(*tasks, return_exceptions=True)

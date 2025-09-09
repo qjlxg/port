@@ -32,18 +32,17 @@ def fetch_web_data(url):
     try:
         response = session.get(url, headers=headers, timeout=10)
         response.raise_for_status()
-        return response.text  # 返回文本内容
+        return response.text
     except requests.exceptions.RequestException as e:
         print(f"请求失败: {e}")
         return None
 
 def get_fund_list():
     """
-    从天天基金网抓取所有场外基金信息（代码、名称、类型等），
-    保存基金代码到 fund_codes.txt，保存所有字段到 fund_codes.csv。
+    从天天基金网抓取场外基金信息（代码、名称、类型等），
+    确保代码为6位数字，保存到 fund_codes.txt 和 fund_codes.csv。
     """
     print("正在从天天基金网获取场外基金列表，请稍候...")
-    # 天天基金网的基金数据 API
     url = 'http://fund.eastmoney.com/js/fundcode_search.js'
     data = fetch_web_data(url)
     if not data:
@@ -52,15 +51,14 @@ def get_fund_list():
 
     try:
         # 提取 JSON 数据
-        # API 返回的内容是一个 JavaScript 变量赋值语句，形如：var r = [...];
-        json_str = re.search(r'var r = (\[.*?\]);', data).group(1)
+        json_str = re.search(r'var r = (\[.*?\]);', data, re.DOTALL).group(1)
         fund_list = json.loads(json_str)
 
-        # 筛选场外基金：排除类型包含 'ETF'、'LOF' 或 '场内' 的基金
+        # 筛选场外基金：代码为6位数字，排除ETF、LOF、场内
         off_exchange_funds = [
             fund for fund in fund_list 
-            if re.match(r'^\d{6}$', fund[0])  # 确保代码是6位数字
-            and 'ETF' not in fund[2] 
+            if isinstance(fund[0], str) and re.match(r'^\d{6}$', fund[0]) 
+            and isinstance(fund[2], str) and 'ETF' not in fund[2] 
             and 'LOF' not in fund[2] 
             and '场内' not in fund[2]
         ]
@@ -69,18 +67,18 @@ def get_fund_list():
             print("未找到任何场外基金。")
             return False
 
-        # 保存基金代码到 fund_codes.txt
+        # 保存6位基金代码到 fund_codes.txt
         with open('fund_codes.txt', 'w', encoding='utf-8') as f:
             for fund in off_exchange_funds:
                 f.write(fund[0] + '\n')
 
-        # 使用 pandas 保存所有字段到 fund_codes.csv
+        # 保存所有字段到 fund_codes.csv
         columns = ['代码', '简称', '类型', '拼音', '全称']
         df = pd.DataFrame(off_exchange_funds, columns=columns)
-        df.to_csv('fund_codes.csv', index=False, encoding='utf-8-sig')  # 使用 utf-8-sig 以支持 Excel 查看
+        df.to_csv('fund_codes.csv', index=False, encoding='utf-8-sig')
 
         print(f"成功获取 {len(off_exchange_funds)} 个场外基金信息，"
-              f"已保存代码到 fund_codes.txt，所有字段到 fund_codes.csv。")
+              f"已保存6位代码到 fund_codes.txt，所有字段到 fund_codes.csv。")
         return True
     except Exception as e:
         print(f"解析数据或保存文件时发生错误: {e}")

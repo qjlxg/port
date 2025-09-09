@@ -12,6 +12,7 @@ from urllib3.util.retry import Retry
 from io import StringIO
 from requests.exceptions import RequestException
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import akshare as ak # 导入akshare库
 
 # 筛选条件
 MIN_RETURN = 3.0
@@ -24,7 +25,7 @@ BATCH_SIZE = 1000
 MAX_WORKERS = 10
 CACHE_DAYS = 1
 
-# 配置 requests 重试机制
+# 配置 requests 重试机制（保留以防万一，但主要数据获取将由akshare处理）
 session = requests.Session()
 retries = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
 session.mount('http://', HTTPAdapter(max_retries=retries))
@@ -69,63 +70,49 @@ def save_cache(df, file_path):
     except Exception as e:
         print(f"保存缓存 {file_path} 失败: {e}", flush=True)
 
+# 使用akshare获取历史净值数据
 def get_fund_history_data(code):
     cache_file = f"cache/history_{code}.csv"
     cached_data = load_cache(cache_file)
     if cached_data is not None:
         return cached_data, None
 
-    url = f"http://fund.eastmoney.com/f10/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=10000"
-    html, error = fetch_web_data(url)
-    if error:
-        return None, error
-
-    match = re.search(r'<tbody>(.*?)</tbody>', html, re.DOTALL)
-    if not match:
-        return None, "解析历史数据失败: 无法找到表格数据"
-
-    table_html = f"<table><thead><tr><th>净值日期</th><th>单位净值</th><th>累计净值</th><th>日增长率</th><th>申购状态</th><th>赎回状态</th><th>分红送配</th></tr></thead><tbody>{match.group(1)}</tbody></table>"
-
     try:
-        df = pd.read_html(StringIO(table_html), header=0, encoding='utf-8')[0]
-        df = df.iloc[::-1]
+        df = ak.fund_etf_hist_em(symbol=code, period="daily", start_date="20000101", end_date=datetime.now().strftime("%Y%m%d"))
         df.columns = ['净值日期', '单位净值', '累计净值', '日增长率', '申购状态', '赎回状态', '分红送配']
+        df['净值日期'] = pd.to_datetime(df['净值日期']).dt.strftime('%Y-%m-%d')
         df['单位净值'] = pd.to_numeric(df['单位净值'], errors='coerce')
         df['累计净值'] = pd.to_numeric(df['累计净值'], errors='coerce')
         df = df.dropna(subset=['单位净值']).reset_index(drop=True)
         save_cache(df, cache_file)
         return df, None
     except Exception as e:
-        return None, f"解析历史数据失败: {e}"
+        return None, f"使用akshare获取历史数据失败: {e}"
 
+# 使用akshare获取实时估值和基金名称
 def get_fund_realtime_info(code):
     cache_file = f"cache/realtime_{code}.csv"
     cached_data = load_cache(cache_file)
     if cached_data is not None:
         return (cached_data['基金名称'].iloc[0], cached_data['实时估值'].iloc[0],
                 cached_data['最新净值'].iloc[0], cached_data['数据来源'].iloc[0], None)
-
-    url = f"http://fundgz.fund.eastmoney.com/Fundgz.ashx?type=js&code={code}"
-    response, error = fetch_web_data(url)
-    if error:
-        return None, None, None, None, error
-
     try:
-        json_str = response.replace('jsonpgz(', '').replace(');', '')
-        data = json.loads(json_str)
-        name = data.get('name')
-        gszzl = data.get('gszzl')
-        latest_net_value = float(data.get('dwjz'))
-        realtime_estimate = latest_net_value * (1 + float(gszzl) / 100) if gszzl and gszzl != '' else None
+        data = ak.fund_em_value_estimation(symbol=code)
+        name = data.iloc[0]['基金名称']
+        gszzl = data.iloc[0]['估算涨幅']
+        latest_net_value = data.iloc[0]['单位净值']
+        realtime_estimate = data.iloc[0]['估算净值']
         cache_df = pd.DataFrame([{
             '基金名称': name, '实时估值': realtime_estimate,
-            '最新净值': latest_net_value, '数据来源': 'pingzhongdata'
+            '最新净值': latest_net_value, '数据来源': 'akshare'
         }])
         save_cache(cache_df, cache_file)
-        return name, realtime_estimate, latest_net_value, 'pingzhongdata', None
+        return name, realtime_estimate, latest_net_value, 'akshare', None
     except Exception as e:
-        return None, None, None, None, f"获取实时数据失败: {e}"
+        return None, None, None, None, f"使用akshare获取实时数据失败: {e}"
 
+# 使用akshare获取管理费（akshare可能没有直接API，需要从其他来源获取）
+# 暂时保留原有的get_fund_fee函数，但如果akshare有新的API，可以替换
 def get_fund_fee(code):
     cache_file = f"cache/fee_{code}.csv"
     cached_data = load_cache(cache_file)
@@ -233,14 +220,14 @@ def process_fund(code):
         debug_info['失败原因'] = realtime_error
         return None, debug_info
 
-    time.sleep(random.uniform(8, 13))  # 增加延时
+    time.sleep(random.uniform(2, 5))  # 增加延时
     fee, fee_error = get_fund_fee(code)
     debug_info['管理费 (%)'] = fee
     if fee_error:
         debug_info['失败原因'] = fee_error
         return None, debug_info
 
-    time.sleep(random.uniform(8, 19))  # 增加延时
+    time.sleep(random.uniform(2, 5))  # 增加延时
     df_history, history_error = get_fund_history_data(code)
     debug_info['数据条数'] = len(df_history) if df_history is not None else 0
     debug_info['数据开始日期'] = df_history['净值日期'].iloc[0] if df_history is not None and not df_history.empty else 'N/A'

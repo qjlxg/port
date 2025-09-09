@@ -24,8 +24,7 @@ MIN_DAYS = 100  # 最低数据天数（从 252 放宽到 100）
 TIMEOUT = 15  # 网络请求超时时间（秒）
 
 # 基金类型筛选，可选：'全部'，'混合型'，'股票型'，'指数型'，'债券型'，'QDII'，'FOF'
-# 将其改回'全部'以确保程序能正常运行并显示所有可筛选类型
-FUND_TYPE_FILTER = '全部'
+FUND_TYPE_FILTER = ['混合型', '股票型', '指数型']
 
 # 配置 requests 重试机制
 session = requests.Session()
@@ -198,9 +197,46 @@ def get_fund_holdings(code):
     except requests.exceptions.RequestException: return []
     except Exception: return []
 
+# 新增功能: 计算贝塔系数
+def calculate_beta(fund_returns, market_returns):
+    """
+    计算基金相对于市场指数的贝塔系数。
+    """
+    if len(fund_returns) < 2 or len(market_returns) < 2:
+        return None
+    
+    # 确保数据对齐
+    aligned_df = pd.DataFrame({'fund': fund_returns, 'market': market_returns}).dropna()
+    if len(aligned_df) < 2:
+        return None
+    
+    fund_returns = aligned_df['fund']
+    market_returns = aligned_df['market']
+    
+    cov_matrix = np.cov(fund_returns, market_returns)
+    beta = cov_matrix[0, 1] / cov_matrix[1, 1] if cov_matrix[1, 1] != 0 else None
+    return round(beta, 2) if beta is not None else None
+
+# 新增功能: 计算最大回撤
+def calculate_max_drawdown(net_values):
+    """
+    计算基金的最大回撤。
+    """
+    if len(net_values) < 2:
+        return None
+    
+    net_values = pd.Series(net_values)
+    rolling_max = net_values.expanding().max()
+    drawdown = (net_values - rolling_max) / rolling_max
+    max_drawdown = drawdown.min() * 100
+    
+    return round(max_drawdown, 2)
+
 # 步骤 6: 计算指标
-def calculate_metrics(net_df, start_date, end_date):
-    """计算基金的年化收益率、波动率和夏普比率。"""
+def calculate_metrics(net_df, start_date, end_date, index_df):
+    """
+    计算基金的年化收益率、波动率、夏普比率、贝塔系数和最大回撤。
+    """
     net_df = net_df[(net_df['date'] >= pd.to_datetime(start_date)) & (net_df['date'] <= pd.to_datetime(end_date))].copy()
     if len(net_df) < MIN_DAYS: return None
     returns = net_df['net_value'].pct_change().dropna()
@@ -209,10 +245,19 @@ def calculate_metrics(net_df, start_date, end_date):
     annual_return *= 100
     volatility = returns.std() * np.sqrt(252) * 100
     sharpe = (annual_return - RISK_FREE_RATE) / volatility if volatility > 0 else 0
+    max_drawdown = calculate_max_drawdown(net_df['net_value'])
+    
+    beta = None
+    if not index_df.empty:
+        index_returns = index_df['net_value'].pct_change().dropna()
+        beta = calculate_beta(returns, index_returns)
+
     return {
         'annual_return': round(annual_return, 2),
         'volatility': round(volatility, 2),
-        'sharpe': round(sharpe, 2)
+        'sharpe': round(sharpe, 2),
+        'max_drawdown': max_drawdown,
+        'beta': beta
     }
 
 # 步骤 7: 增强持仓分析 - 行业分布与集中度
@@ -288,7 +333,7 @@ def main():
             continue
 
         # 计算指标
-        metrics = calculate_metrics(net_df, start_date, end_date)
+        metrics = calculate_metrics(net_df, start_date, end_date, index_df)
         if metrics is None:
             print(f"    跳过：数据不足 {MIN_DAYS} 天（仅有 {len(net_df)} 天）。")
             continue
@@ -309,6 +354,8 @@ def main():
                 '年化收益率 (%)': metrics['annual_return'],
                 '年化波动率 (%)': metrics['volatility'],
                 '夏普比率': metrics['sharpe'],
+                '贝塔系数': metrics['beta'],
+                '最大回撤 (%)': metrics['max_drawdown'],
                 '管理费 (%)': round(fee, 2),
                 '最新净值': latest_net_value,
                 '实时估值': round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A'

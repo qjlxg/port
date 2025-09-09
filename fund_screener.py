@@ -43,7 +43,7 @@ def fetch_web_data(url):
     try:
         response = session.get(url, headers=headers, timeout=10)
         response.raise_for_status()
-        return response.text
+        return response.text, None
     except requests.exceptions.RequestException as e:
         return None, f"请求失败: {e}"
 
@@ -150,30 +150,39 @@ def load_fund_list(file_path='fund_codes.txt'):
         with open(file_path, 'r', encoding='utf-8') as f:
             return [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
-        print(f"错误：未能找到基金代码文件 {file_path}。请先运行 get_fund_list.py。")
+        print(f"错误：未能找到基金代码文件 {file_path}。请先运行 get_fund_list.py。", flush=True)
         return []
+
+def is_otc_fund(code):
+    """
+    判断基金代码是否为场外基金（通常以0开头）
+    """
+    return code.startswith('0')
 
 def main():
     fund_list = load_fund_list()
     if not fund_list:
         return
 
+    otc_fund_list = [code for code in fund_list if is_otc_fund(code)]
+    print(f"已从 {len(fund_list)} 个基金中筛选出 {len(otc_fund_list)} 个场外基金。", flush=True)
+
     results = []
     debug_data = []
 
-    for code in fund_list:
-        print(f"正在处理基金：{code}")
+    for code in otc_fund_list:
+        print(f"正在处理基金：{code}", flush=True)
         debug_info = {'基金代码': code}
         
         name, realtime_estimate, latest_net_value, data_source, realtime_error = get_fund_realtime_info(code)
         if realtime_error:
             debug_info['失败原因'] = realtime_error
             debug_data.append(debug_info)
-            print(f"基金 {code} - 实时数据获取失败: {realtime_error}")
-            time.sleep(random.uniform(1, 3))
+            print(f"基金 {code} - 实时数据获取失败: {realtime_error}", flush=True)
+            time.sleep(random.uniform(0.5, 1))
             continue
         
-        print(f"基金名称：{name}, 最新净值：{latest_net_value}, 实时估值：{round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A'}")
+        print(f"基金名称：{name}, 最新净值：{latest_net_value}, 实时估值：{round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A'}", flush=True)
         debug_info['基金名称'] = name
         debug_info['最新净值'] = latest_net_value
         debug_info['实时估值'] = round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A'
@@ -183,8 +192,8 @@ def main():
         if fee_error:
             debug_info['失败原因'] = f"管理费获取失败: {fee_error}"
             debug_data.append(debug_info)
-            print(f"基金 {name} - 管理费获取失败: {fee_error}")
-            time.sleep(random.uniform(1, 3))
+            print(f"基金 {name} - 管理费获取失败: {fee_error}", flush=True)
+            time.sleep(random.uniform(0.5, 1))
             continue
         debug_info['管理费 (%)'] = fee
         
@@ -192,8 +201,8 @@ def main():
         if history_error:
             debug_info['失败原因'] = history_error
             debug_data.append(debug_info)
-            print(f"基金 {name} - 历史数据获取失败: {history_error}")
-            time.sleep(random.uniform(1, 3))
+            print(f"基金 {name} - 历史数据获取失败: {history_error}", flush=True)
+            time.sleep(random.uniform(0.5, 1))
             continue
         debug_info['数据条数'] = len(df_history)
         debug_info['数据开始日期'] = df_history['净值日期'].iloc[0]
@@ -203,8 +212,8 @@ def main():
         if metrics_error:
             debug_info['失败原因'] = metrics_error
             debug_data.append(debug_info)
-            print(f"基金 {name} - 指标计算失败: {metrics_error}")
-            time.sleep(random.uniform(1, 3))
+            print(f"基金 {name} - 指标计算失败: {metrics_error}", flush=True)
+            time.sleep(random.uniform(0.5, 1))
             continue
             
         debug_info.update({
@@ -237,23 +246,23 @@ def main():
         else:
             debug_info['失败原因'] = '未通过筛选'
         debug_data.append(debug_info)
-        print("-" * 50)
-        time.sleep(random.uniform(3, 7))  # 随机延时 3-7 秒
+        print("-" * 50, flush=True)
+        time.sleep(random.uniform(0.5, 1))  # 随机延时 0.5-1 秒
 
     # 保存调试信息
     debug_df = pd.DataFrame(debug_data)
     debug_df.to_csv('debug_fund_metrics.csv', index=False, encoding='utf-8-sig')
-    print("调试信息已保存至 debug_fund_metrics.csv")
+    print("调试信息已保存至 debug_fund_metrics.csv", flush=True)
 
     # 输出结果
     if results:
         final_df = pd.DataFrame(results).sort_values('综合评分', ascending=False)
         final_df.to_csv('recommended_cn_funds.csv', index=False, encoding='utf-8-sig')
-        print(f"共筛选出 {len(final_df)} 只推荐基金，结果已保存至 recommended_cn_funds.csv")
-        print("\n推荐基金列表：")
-        print(final_df)
+        print(f"共筛选出 {len(final_df)} 只推荐基金，结果已保存至 recommended_cn_funds.csv", flush=True)
+        print("\n推荐基金列表：", flush=True)
+        print(final_df, flush=True)
     else:
-        print("抱歉，没有找到符合筛选条件的基金。请尝试放宽筛选条件。")
+        print("抱歉，没有找到符合筛选条件的基金。请尝试放宽筛选条件。", flush=True)
 
 if __name__ == '__main__':
     main()

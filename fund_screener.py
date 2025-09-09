@@ -193,7 +193,7 @@ def pre_screen_funds(fund_list):
         if not is_otc_fund(code):
             return None
         fee, error = get_fund_fee(code)
-        time.sleep(random.uniform(1, 1.5))  # 增加延时
+        time.sleep(random.uniform(2, 5))  # 增加延时
         if not error and fee is not None and fee <= MAX_FEE:
             return code
         return None
@@ -225,12 +225,14 @@ def process_fund(code):
         debug_info['失败原因'] = realtime_error
         return None, debug_info
 
+    time.sleep(random.uniform(18, 15))  # 增加延时
     fee, fee_error = get_fund_fee(code)
     debug_info['管理费 (%)'] = fee
     if fee_error:
         debug_info['失败原因'] = fee_error
         return None, debug_info
 
+    time.sleep(random.uniform(10, 18))  # 增加延时
     df_history, history_error = get_fund_history_data(code)
     debug_info['数据条数'] = len(df_history) if df_history is not None else 0
     debug_info['数据开始日期'] = df_history['净值日期'].iloc[0] if df_history is not None and not df_history.empty else 'N/A'
@@ -327,7 +329,7 @@ def main():
                 except Exception as e:
                     batch_debug.append({'基金代码': code, '失败原因': f'处理失败: {e}'})
                 print(f"完成处理基金：{code}", flush=True)
-                time.sleep(random.uniform(0.2, 0.5))
+                time.sleep(random.uniform(2, 5))
 
         if batch_results:
             batch_df = pd.DataFrame(batch_results)

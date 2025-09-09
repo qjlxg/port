@@ -1,6 +1,6 @@
 import pandas as pd
 import requests
-from io import StringIO
+import json
 import re
 import random
 import time
@@ -32,58 +32,41 @@ def fetch_web_data(url):
     try:
         response = session.get(url, headers=headers, timeout=10)
         response.raise_for_status()
-        # 直接返回 bytes 内容，让调用者指定编码
-        return response.content
+        return response.text  # 返回文本内容
     except requests.exceptions.RequestException as e:
         print(f"请求失败: {e}")
         return None
-
-# 天天基金网基金列表页面
-URL = 'http://fund.eastmoney.com/fund.html'
 
 def get_fund_list():
     """
     从天天基金网抓取所有开放式基金代码，并保存到文件。
     """
     print("正在从天天基金网获取基金列表，请稍候...")
-    html_content = fetch_web_data(URL)
-    if not html_content:
+    # 天天基金网的基金数据 API
+    url = 'http://fund.eastmoney.com/js/fundcode_search.js'
+    data = fetch_web_data(url)
+    if not data:
         print("获取基金列表失败。")
         return False
-    
+
     try:
-        # 使用gbk编码解码网页内容
-        html_str = html_content.decode('gbk')
-        
-        # 使用 pandas 解析 HTML 表格
-        df = pd.read_html(StringIO(html_str), header=0, encoding='gbk')[0]
-        
-        # 打印所有列名，方便调试
-        print("网页表格中的所有列名：", df.columns.tolist())
-        
-        # 尝试通过列名模糊匹配找到基金代码列
-        code_col = None
-        for col in df.columns:
-            if '代码' in col or 'code' in col.lower():
-                code_col = col
-                break
-        
-        # 如果找不到包含'代码'的列名，则假设第一列是基金代码
-        if not code_col:
-            print("警告：未能找到包含'代码'的列名，默认为第一列。")
-            code_col = df.columns[0]
-        
-        # 提取基金代码列，并进行筛选（确保是6位数字）
-        fund_codes = df[code_col].astype(str).loc[df[code_col].astype(str).str.match(r'^\d{6}$')]
-        
+        # 提取 JSON 数据
+        # API 返回的内容是一个 JavaScript 变量赋值语句，形如：var r = [...];
+        json_str = re.search(r'var r = (\[.*?\]);', data).group(1)
+        fund_list = json.loads(json_str)
+
+        # 提取基金代码（每个元素是一个列表，第一个元素是基金代码）
+        fund_codes = [fund[0] for fund in fund_list if re.match(r'^\d{6}$', fund[0])]
+
+        # 保存到文件
         with open('fund_codes.txt', 'w', encoding='utf-8') as f:
             for code in fund_codes:
                 f.write(code + '\n')
-        
+
         print(f"成功获取 {len(fund_codes)} 个基金代码，并已保存到 fund_codes.txt 文件中。")
         return True
     except Exception as e:
-        print(f"解析网页或保存文件时发生错误: {e}")
+        print(f"解析数据或保存文件时发生错误: {e}")
         return False
 
 if __name__ == '__main__':

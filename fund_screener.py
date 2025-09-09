@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 MIN_RETURN = 3.0
 MAX_VOLATILITY = 25.0
 MIN_SHARPE = 0.2
-MAX_FEE = 2.5
+MAX_FEE = 3.5
 RISK_FREE_RATE = 3.0
 MIN_DAYS = 100
 BATCH_SIZE = 1000

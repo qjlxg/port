@@ -6,11 +6,10 @@ import re
 from datetime import datetime
 import time
 import random
-import asyncio
-import aiohttp
-from requests.exceptions import RequestException
 from io import StringIO
 from typing import List, Dict, Any, Tuple, Optional
+import ssl
+from urllib.parse import urlparse
 
 # 筛选条件
 MIN_RETURN = 3.0  # 年化收益率 ≥ 3%
@@ -29,21 +28,20 @@ USER_AGENTS = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_2) AppleWebKit/601.3.9 (KHTML, like Gecko) Version/9.0.2 Safari/601.3.9'
 ]
 
-async def fetch_web_data_async(session: aiohttp.ClientSession, url: str) -> Tuple[Optional[str], Optional[str]]:
-    """通用异步网页数据抓取函数"""
+def fetch_web_data(url: str) -> Tuple[Optional[str], Optional[str]]:
+    """通用网页数据抓取函数 (使用 requests)"""
     headers = {'User-Agent': random.choice(USER_AGENTS)}
     try:
-        # Force HTTPS and port 443
-        async with session.get(url, headers=headers, ssl=True, timeout=10) as response:
-            response.raise_for_status()
-            return await response.text(), None
-    except aiohttp.ClientError as e:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        return response.text, None
+    except requests.exceptions.RequestException as e:
         return None, f"请求失败: {e}"
 
-async def get_fund_history_data_async(session: aiohttp.ClientSession, code: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
-    """异步获取基金历史净值数据"""
+def get_fund_history_data(code: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+    """获取基金历史净值数据"""
     url = f"https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=10000"
-    html, error = await fetch_web_data_async(session, url)
+    html, error = fetch_web_data(url)
     if error:
         return None, error
     
@@ -64,10 +62,10 @@ async def get_fund_history_data_async(session: aiohttp.ClientSession, code: str)
     except Exception as e:
         return None, f"解析历史数据失败: {e}"
 
-async def get_fund_realtime_info_async(session: aiohttp.ClientSession, code: str) -> Tuple[Optional[str], Optional[float], Optional[float], Optional[str], Optional[str]]:
-    """异步获取基金实时估值和名称"""
+def get_fund_realtime_info(code: str) -> Tuple[Optional[str], Optional[float], Optional[float], Optional[str], Optional[str]]:
+    """获取基金实时估值和名称"""
     url = f"https://fundgz.fund.eastmoney.com/Fundgz.ashx?type=js&code={code}"
-    response, error = await fetch_web_data_async(session, url)
+    response, error = fetch_web_data(url)
     if error:
         return None, None, None, None, error
 
@@ -120,87 +118,74 @@ def load_fund_list(file_path: str = 'fund_codes.txt') -> List[str]:
         print(f"错误：未能找到基金代码文件 {file_path}。请先运行 get_fund_list.py。", flush=True)
         return []
 
-async def process_fund(code: str, session: aiohttp.ClientSession, semaphore: asyncio.Semaphore) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """单个基金的异步处理协程"""
-    async with semaphore:
-        debug_info = {'基金代码': code}
-        
-        print(f"正在处理基金：{code}", flush=True)
-        
-        name, realtime_estimate, latest_net_value, data_source, realtime_error = await get_fund_realtime_info_async(session, code)
-        if realtime_error:
-            debug_info['失败原因'] = f"实时数据获取失败: {realtime_error}"
-            return None, debug_info
+def process_fund(code: str) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """单个基金的处理函数"""
+    debug_info = {'基金代码': code}
+    
+    print(f"正在处理基金：{code}", flush=True)
+    
+    name, realtime_estimate, latest_net_value, data_source, realtime_error = get_fund_realtime_info(code)
+    if realtime_error:
+        debug_info['失败原因'] = f"实时数据获取失败: {realtime_error}"
+        return None, debug_info
 
-        df_history, history_error = await get_fund_history_data_async(session, code)
-        if history_error:
-            debug_info['失败原因'] = f"历史数据获取失败: {history_error}"
-            return None, debug_info
+    df_history, history_error = get_fund_history_data(code)
+    if history_error:
+        debug_info['失败原因'] = f"历史数据获取失败: {history_error}"
+        return None, debug_info
+    
+    metrics, metrics_error = calculate_fund_metrics(df_history, RISK_FREE_RATE)
+    if metrics_error:
+        debug_info['失败原因'] = f"指标计算失败: {metrics_error}"
+        return None, debug_info
         
-        metrics, metrics_error = calculate_fund_metrics(df_history, RISK_FREE_RATE)
-        if metrics_error:
-            debug_info['失败原因'] = f"指标计算失败: {metrics_error}"
-            return None, debug_info
-            
-        debug_info.update({
+    debug_info.update({
+        '基金名称': name,
+        '最新净值': latest_net_value,
+        '实时估值': round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A',
+        '数据来源': data_source,
+        '数据条数': len(df_history),
+        '数据开始日期': df_history['净值日期'].iloc[0],
+        '数据结束日期': df_history['净值日期'].iloc[-1],
+        '年化收益率 (%)': metrics['annual_return'],
+        '年化波动率 (%)': metrics['volatility'],
+        '夏普比率': metrics['sharpe']
+    })
+
+    if (metrics['annual_return'] >= MIN_RETURN and
+        metrics['volatility'] <= MAX_VOLATILITY and
+        metrics['sharpe'] >= MIN_SHARPE):
+        result = {
+            '基金代码': code,
             '基金名称': name,
-            '最新净值': latest_net_value,
-            '实时估值': round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A',
-            '数据来源': data_source,
-            '数据条数': len(df_history),
-            '数据开始日期': df_history['净值日期'].iloc[0],
-            '数据结束日期': df_history['净值日期'].iloc[-1],
             '年化收益率 (%)': metrics['annual_return'],
             '年化波动率 (%)': metrics['volatility'],
-            '夏普比率': metrics['sharpe']
-        })
+            '夏普比率': metrics['sharpe'],
+            '最新净值': latest_net_value,
+            '实时估值': round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A',
+            '数据来源': data_source
+        }
+        score = (0.6 * (metrics['annual_return'] / 20) +
+                 0.3 * metrics['sharpe'])
+        result['综合评分'] = round(score, 2)
+        debug_info['筛选结果'] = '通过'
+        return result, debug_info
+    else:
+        debug_info['筛选结果'] = '未通过'
+        return None, debug_info
 
-        if (metrics['annual_return'] >= MIN_RETURN and
-            metrics['volatility'] <= MAX_VOLATILITY and
-            metrics['sharpe'] >= MIN_SHARPE):
-            result = {
-                '基金代码': code,
-                '基金名称': name,
-                '年化收益率 (%)': metrics['annual_return'],
-                '年化波动率 (%)': metrics['volatility'],
-                '夏普比率': metrics['sharpe'],
-                '最新净值': latest_net_value,
-                '实时估值': round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A',
-                '数据来源': data_source
-            }
-            score = (0.6 * (metrics['annual_return'] / 20) +
-                     0.3 * metrics['sharpe'])
-            result['综合评分'] = round(score, 2)
-            debug_info['筛选结果'] = '通过'
-            return result, debug_info
-        else:
-            debug_info['筛选结果'] = '未通过'
-            return None, debug_info
-
-async def main():
+def main():
     fund_list = load_fund_list()
     if not fund_list:
         return
 
-    print(f"已加载 {len(fund_list)} 个基金代码，开始并发处理。", flush=True)
+    print(f"已加载 {len(fund_list)} 个基金代码，开始处理。", flush=True)
 
     results = []
     debug_data = []
 
-    semaphore = asyncio.Semaphore(50)
-    
-    # 强制使用 HTTPS 协议和 SSL 连接
-    conn = aiohttp.TCPConnector(limit=50, ssl=True)
-    async with aiohttp.ClientSession(connector=conn) as session:
-        tasks = [process_fund(code, session, semaphore) for code in fund_list]
-        processed_data = await asyncio.gather(*tasks, return_exceptions=True)
-        
-    for item in processed_data:
-        if isinstance(item, Exception):
-            print(f"任务执行中出现异常: {item}", flush=True)
-            continue
-            
-        result, debug_info = item
+    for code in fund_list:
+        result, debug_info = process_fund(code)
         if result:
             results.append(result)
         debug_data.append(debug_info)
@@ -219,4 +204,4 @@ async def main():
         print("\n抱歉，没有找到符合筛选条件的基金。请尝试放宽筛选条件。", flush=True)
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()

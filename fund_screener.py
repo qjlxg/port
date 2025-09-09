@@ -16,7 +16,6 @@ from typing import List, Dict, Any, Tuple, Optional
 MIN_RETURN = 3.0  # 年化收益率 ≥ 3%
 MAX_VOLATILITY = 25.0  # 波动率 ≤ 25%
 MIN_SHARPE = 0.2  # 夏普比率 ≥ 0.2
-MAX_FEE = 2.5  # 管理费 ≤ 2.5% (仅用于信息展示)
 RISK_FREE_RATE = 3.0  # 无风险利率 3%
 MIN_DAYS = 100  # 最低数据天数
 
@@ -42,7 +41,7 @@ async def fetch_web_data_async(session: aiohttp.ClientSession, url: str) -> Tupl
 
 async def get_fund_history_data_async(session: aiohttp.ClientSession, code: str) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
     """异步获取基金历史净值数据"""
-    url = f"http://fund.eastmoney.com/f10/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=10000"
+    url = f"https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=10000"
     html, error = await fetch_web_data_async(session, url)
     if error:
         return None, error
@@ -66,7 +65,7 @@ async def get_fund_history_data_async(session: aiohttp.ClientSession, code: str)
 
 async def get_fund_realtime_info_async(session: aiohttp.ClientSession, code: str) -> Tuple[Optional[str], Optional[float], Optional[float], Optional[str], Optional[str]]:
     """异步获取基金实时估值和名称"""
-    url = f"http://fundgz.fund.eastmoney.com/Fundgz.ashx?type=js&code={code}"
+    url = f"https://fundgz.fund.eastmoney.com/Fundgz.ashx?type=js&code={code}"
     response, error = await fetch_web_data_async(session, url)
     if error:
         return None, None, None, None, error
@@ -85,23 +84,6 @@ async def get_fund_realtime_info_async(session: aiohttp.ClientSession, code: str
     except Exception as e:
         return None, None, None, None, f"获取实时数据失败: {e}"
 
-async def get_fund_fee_async(session: aiohttp.ClientSession, code: str) -> Tuple[Optional[float], Optional[str]]:
-    """异步获取基金管理费"""
-    url = f"http://fund.eastmoney.com/{code}.html"
-    html, error = await fetch_web_data_async(session, url)
-    if error:
-        return None, error
-    
-    try:
-        match = re.search(r'管理费率：(\d+\.\d+)%', html)
-        if match:
-            fee = float(match.group(1))
-            return fee, None
-        else:
-            return None, "无法获取管理费率"
-    except Exception as e:
-        return None, f"解析管理费失败: {e}"
-
 def calculate_fund_metrics(df_history: pd.DataFrame, risk_free_rate: float) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """计算基金指标"""
     if df_history is None or df_history.empty:
@@ -113,6 +95,9 @@ def calculate_fund_metrics(df_history: pd.DataFrame, risk_free_rate: float) -> T
 
     daily_returns = df_history['单位净值'].pct_change().dropna()
     
+    if daily_returns.empty:
+        return None, "无有效收益数据"
+        
     annual_return = np.power((1 + daily_returns).prod(), 252 / num_days) - 1
     volatility = daily_returns.std() * np.sqrt(252)
     sharpe_ratio = (annual_return - risk_free_rate / 100) / volatility if volatility != 0 else 0
@@ -146,11 +131,6 @@ async def process_fund(code: str, session: aiohttp.ClientSession, semaphore: asy
             debug_info['失败原因'] = f"实时数据获取失败: {realtime_error}"
             return None, debug_info
 
-        fee, fee_error = await get_fund_fee_async(session, code)
-        if fee_error:
-            debug_info['失败原因'] = f"管理费获取失败: {fee_error}"
-            return None, debug_info
-
         df_history, history_error = await get_fund_history_data_async(session, code)
         if history_error:
             debug_info['失败原因'] = f"历史数据获取失败: {history_error}"
@@ -166,7 +146,6 @@ async def process_fund(code: str, session: aiohttp.ClientSession, semaphore: asy
             '最新净值': latest_net_value,
             '实时估值': round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A',
             '数据来源': data_source,
-            '管理费 (%)': fee,
             '数据条数': len(df_history),
             '数据开始日期': df_history['净值日期'].iloc[0],
             '数据结束日期': df_history['净值日期'].iloc[-1],
@@ -184,7 +163,6 @@ async def process_fund(code: str, session: aiohttp.ClientSession, semaphore: asy
                 '年化收益率 (%)': metrics['annual_return'],
                 '年化波动率 (%)': metrics['volatility'],
                 '夏普比率': metrics['sharpe'],
-                '管理费 (%)': round(fee, 2),
                 '最新净值': latest_net_value,
                 '实时估值': round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A',
                 '数据来源': data_source
@@ -208,14 +186,11 @@ async def main():
     results = []
     debug_data = []
 
-    # 限制并发任务数量，例如 50 个
     semaphore = asyncio.Semaphore(50)
     
     conn = aiohttp.TCPConnector(limit=50)
     async with aiohttp.ClientSession(connector=conn) as session:
         tasks = [process_fund(code, session, semaphore) for code in fund_list]
-        
-        # 使用 asyncio.gather 来同时运行所有任务
         processed_data = await asyncio.gather(*tasks, return_exceptions=True)
         
     for item in processed_data:
@@ -228,12 +203,10 @@ async def main():
             results.append(result)
         debug_data.append(debug_info)
     
-    # 保存调试信息
     debug_df = pd.DataFrame(debug_data)
     debug_df.to_csv('debug_fund_metrics.csv', index=False, encoding='utf-8-sig')
     print("\n调试信息已保存至 debug_fund_metrics.csv", flush=True)
 
-    # 输出结果
     if results:
         final_df = pd.DataFrame(results).sort_values('综合评分', ascending=False)
         final_df.to_csv('recommended_cn_funds.csv', index=False, encoding='utf-8-sig')

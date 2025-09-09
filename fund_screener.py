@@ -315,69 +315,123 @@ def main():
     
     print(">>> 步骤3: 正在逐一处理基金数据并进行筛选...", flush=True)
     results = []
-    
+    debug_data = [] # 新增调试信息列表
+
     # 预先获取市场指数数据
     index_code = '000300' # 沪深300指数
-    index_df, _ = get_net_values_from_pingzhongdata(index_code, start_date, end_date)
-    if index_df.empty:
-        print(f"    × 无法获取市场指数 {index_code} 的历史数据，将尝试备用指数。", flush=True)
-        index_code_fallback = '000001' # 上证指数
-        index_df, _ = get_net_values_from_pingzhongdata(index_code_fallback, start_date, end_date)
+    index_df = pd.DataFrame()
+    try:
+        index_df, _ = get_net_values_from_pingzhongdata(index_code, start_date, end_date)
         if index_df.empty:
-            print(f"    × 无法获取市场指数 {index_code_fallback} 的历史数据，将无法计算贝塔系数。", flush=True)
+            print(f"    × 无法获取市场指数 {index_code} 的历史数据，将尝试备用指数。", flush=True)
+            index_code_fallback = '000001' # 上证指数
+            index_df, _ = get_net_values_from_pingzhongdata(index_code_fallback, start_date, end_date)
+            if index_df.empty:
+                print(f"    × 无法获取市场指数 {index_code_fallback} 的历史数据，将无法计算贝塔系数。", flush=True)
+    except Exception as e:
+        print(f"    × 获取市场指数数据时发生异常: {e}。贝塔系数将无法计算。", flush=True)
+
 
     for idx, row in funds_df.iterrows():
         code = row['code']
         name = row['name']
+        fund_type = row['type']
         
-        print(f"\n    正在处理基金 {idx+1}/{len(funds_df)}: {name} ({code})...", flush=True)
-
-        # 获取历史净值数据
-        net_df, latest_net_value, data_source = get_fund_net_values(code, start_date, end_date)
+        debug_info = {'基金代码': code, '基金名称': name, '基金类型': fund_type}
         
-        if net_df.empty:
-            print(f"    跳过：净值数据不足。", flush=True)
-            continue
-
-        # 计算指标
-        metrics = calculate_metrics(net_df, start_date, end_date, index_df)
-        if metrics is None:
-            print(f"    跳过：数据不足 {MIN_DAYS} 天（仅有 {len(net_df)} 天）。", flush=True)
-            continue
-
-        # 获取管理费和实时估值
-        fee = get_fund_fee(code)
-        realtime_estimate = get_fund_realtime_estimate(code)
-
-        # 筛选
-        if (metrics['annual_return'] >= MIN_RETURN and
-            metrics['volatility'] <= MAX_VOLATILITY and
-            metrics['sharpe'] >= MIN_SHARPE and
-            fee <= MAX_FEE):
+        print(f"\n--- 正在处理基金 {idx+1}/{len(funds_df)}: {name} ({code})...", flush=True)
+        
+        try:
+            # 获取历史净值数据
+            net_df, latest_net_value, data_source = get_fund_net_values(code, start_date, end_date)
             
-            result = {
-                '基金代码': code,
-                '基金名称': name,
+            if net_df.empty:
+                print(f"    跳过：净值数据不足。", flush=True)
+                debug_info['筛选状态'] = '未通过'
+                debug_info['失败原因'] = '净值数据不足'
+                debug_data.append(debug_info)
+                continue
+
+            # 计算指标
+            metrics = calculate_metrics(net_df, start_date, end_date, index_df)
+            if metrics is None:
+                print(f"    跳过：数据不足 {MIN_DAYS} 天（仅有 {len(net_df)} 天）。", flush=True)
+                debug_info['筛选状态'] = '未通过'
+                debug_info['失败原因'] = f'数据天数不足 {MIN_DAYS}'
+                debug_data.append(debug_info)
+                continue
+            
+            # 获取管理费和实时估值
+            fee = get_fund_fee(code)
+            realtime_estimate = get_fund_realtime_estimate(code)
+            
+            # 筛选
+            is_passed = (metrics['annual_return'] >= MIN_RETURN and
+                         metrics['volatility'] <= MAX_VOLATILITY and
+                         metrics['sharpe'] >= MIN_SHARPE and
+                         fee <= MAX_FEE)
+            
+            if is_passed:
+                result = {
+                    '基金代码': code,
+                    '基金名称': name,
+                    '年化收益率 (%)': metrics['annual_return'],
+                    '年化波动率 (%)': metrics['volatility'],
+                    '夏普比率': metrics['sharpe'],
+                    '贝塔系数': metrics['beta'],
+                    '最大回撤 (%)': metrics['max_drawdown'],
+                    '管理费 (%)': round(fee, 2),
+                    '最新净值': latest_net_value,
+                    '实时估值': round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A'
+                }
+                # 综合评分
+                score = (0.6 * (metrics['annual_return'] / 20) + 0.3 * metrics['sharpe'] + 0.1 * (2 - fee))
+                result['综合评分'] = round(score, 2)
+                results.append(result)
+                
+                debug_info['筛选状态'] = '通过'
+                debug_info['综合评分'] = result['综合评分']
+                print(f"    √ 通过筛选，评分: {result['综合评分']:.2f}", flush=True)
+            else:
+                debug_info['筛选状态'] = '未通过'
+                # 记录具体失败原因
+                reasons = []
+                if metrics['annual_return'] < MIN_RETURN: reasons.append(f"年化收益率 ({metrics['annual_return']}%) < {MIN_RETURN}%")
+                if metrics['volatility'] > MAX_VOLATILITY: reasons.append(f"波动率 ({metrics['volatility']}%) > {MAX_VOLATILITY}%")
+                if metrics['sharpe'] < MIN_SHARPE: reasons.append(f"夏普比率 ({metrics['sharpe']}) < {MIN_SHARPE}")
+                if fee > MAX_FEE: reasons.append(f"管理费 ({fee}%) > {MAX_FEE}%")
+                debug_info['失败原因'] = ' / '.join(reasons)
+                
+                print(f"    × 未通过筛选。原因：{' / '.join(reasons)}", flush=True)
+            
+            # 记录所有处理的基金的指标
+            debug_info.update({
                 '年化收益率 (%)': metrics['annual_return'],
                 '年化波动率 (%)': metrics['volatility'],
                 '夏普比率': metrics['sharpe'],
                 '贝塔系数': metrics['beta'],
                 '最大回撤 (%)': metrics['max_drawdown'],
-                '管理费 (%)': round(fee, 2),
-                '最新净值': latest_net_value,
-                '实时估值': round(realtime_estimate, 4) if realtime_estimate is not None else 'N/A'
-            }
-            score = (0.6 * (metrics['annual_return'] / 20) + 0.3 * metrics['sharpe'] + 0.1 * (2 - fee))
-            result['综合评分'] = round(score, 2)
-            results.append(result)
-            print(f"    √ 通过筛选，评分: {result['综合评分']:.2f}", flush=True)
-        else:
-            print("    × 未通过筛选。", flush=True)
+                '管理费 (%)': round(fee, 2)
+            })
+
+        except Exception as e:
+            print(f"    × 处理基金 {name} ({code}) 时发生意外异常：{e}", flush=True)
+            debug_info['筛选状态'] = '未通过'
+            debug_info['失败原因'] = f'异常错误: {e}'
+        finally:
+            debug_data.append(debug_info)
+            # 随机延时，避免被服务器封禁
+            time.sleep(random.uniform(3, 7))
+
+    # 保存调试信息
+    if debug_data:
+        debug_df = pd.DataFrame(debug_data)
+        debug_df.to_csv('debug_fund_metrics.csv', index=False, encoding='utf-8-sig')
+        print(f"\n调试信息已保存至 debug_fund_metrics.csv 文件，共计 {len(debug_df)} 条记录。", flush=True)
 
     # 输出结果并获取持仓信息
     if results:
-        final_df = pd.DataFrame(results).sort_values('综合评分', ascending=False)
-        final_df = final_df.reset_index(drop=True)
+        final_df = pd.DataFrame(results).sort_values('综合评分', ascending=False).reset_index(drop=True)
         final_df.index = final_df.index + 1
         
         print("\n--- 步骤4: 筛选完成，开始输出推荐基金列表 ---", flush=True)
@@ -391,20 +445,25 @@ def main():
             
             print(f"\n--- 正在分析基金 {name} ({code}) 的持仓详情 ---", flush=True)
             
-            holdings = get_fund_holdings(code)
+            try:
+                holdings = get_fund_holdings(code)
+                if holdings:
+                    print(f"    √ 成功获取到最新十大持仓。", flush=True)
+                    print("      - 持仓股票:", flush=True)
+                    for holding in holdings:
+                        print(f"        股票名称: {holding.get('name', 'N/A')}, 股票代码: {holding.get('code', 'N/A')}, 占比: {holding.get('ratio', 'N/A')}", flush=True)
+                    
+                    industry_df, concentration = analyze_holdings(holdings)
+                    print(f"\n      - 行业分析:", flush=True)
+                    print(industry_df.to_string(index=False), flush=True)
+                    print(f"        行业集中度（前三大行业占比）: {concentration:.2f}%", flush=True)
+                else:
+                    print(f"    × 未能获取到最新持仓数据。", flush=True)
+            except Exception as e:
+                print(f"    × 获取持仓数据时发生异常：{e}", flush=True)
             
-            if holdings:
-                print(f"    √ 成功获取到最新十大持仓。", flush=True)
-                print("      - 持仓股票:", flush=True)
-                for holding in holdings:
-                    print(f"        股票名称: {holding.get('name', 'N/A')}, 股票代码: {holding.get('code', 'N/A')}, 占比: {holding.get('ratio', 'N/A')}", flush=True)
-                
-                industry_df, concentration = analyze_holdings(holdings)
-                print(f"\n      - 行业分析:", flush=True)
-                print(industry_df.to_string(index=False), flush=True)
-                print(f"        行业集中度（前三大行业占比）: {concentration:.2f}%", flush=True)
-            else:
-                print(f"    × 未能获取到最新持仓数据。", flush=True)
+            time.sleep(random.uniform(1, 3)) # 随机延时
+            
     else:
         print("\n没有找到符合条件的基金，建议调整筛选条件。", flush=True)
         

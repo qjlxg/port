@@ -20,7 +20,7 @@ async def fetch_web_data_async(session: aiohttp.ClientSession, url: str) -> Tupl
     """通用异步网页数据抓取函数"""
     headers = {'User-Agent': random.choice(USER_AGENTS)}
     try:
-        # 增加超时时间
+        # 增加超时时间，应对网络延迟
         async with session.get(url, headers=headers, timeout=30) as response:
             response.raise_for_status()
             return await response.text(), None
@@ -52,8 +52,8 @@ async def get_manager_info(session: aiohttp.ClientSession, code: str) -> Tuple[O
 
 async def get_holdings_info(session: aiohttp.ClientSession, code: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """异步获取前十大持仓信息"""
-    # 修正后的URL，确保使用正确的域名和路径
-    url = f"http://fund.eastmoney.com/f10/FundHoldings.html?fundCode={code}"
+    # *** 关键修复：更新为最新的 URL 路径格式 ***
+    url = f"http://fundf10.eastmoney.com/ccmx_{code}.html"
     html, error = await fetch_web_data_async(session, url)
     if error:
         return None, None, error
@@ -62,6 +62,8 @@ async def get_holdings_info(session: aiohttp.ClientSession, code: str) -> Tuple[
         soup = BeautifulSoup(html, 'lxml')
         top_10_stocks = []
         
+        # 使用 BeautifulSoup 定位表格
+        # 在新的URL结构中，表格的 class 可能会变，需要动态寻找
         table = soup.find('table', class_='w782')
         if table:
             rows = table.find('tbody').find_all('tr')
@@ -76,6 +78,7 @@ async def get_holdings_info(session: aiohttp.ClientSession, code: str) -> Tuple[
         if not holdings_str:
             holdings_str = "无持仓数据"
         
+        # 匹配更新日期
         date_span = soup.find('span', text=re.compile(r'截止日期：'))
         update_date = date_span.next_sibling.strip() if date_span and date_span.next_sibling else "N/A"
         
@@ -90,6 +93,7 @@ async def process_fund_details(fund: Dict[str, Any], session: aiohttp.ClientSess
         code_str = str(fund['基金代码']).zfill(6)
         print(f"正在获取基金 {code_str} 的详细信息...", flush=True)
 
+        # 在每次请求前随机等待，模拟人类行为
         await asyncio.sleep(random.uniform(1, 3))
 
         manager_name, tenure_years, fund_count, manager_error = await get_manager_info(session, code_str)

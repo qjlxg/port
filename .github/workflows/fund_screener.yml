@@ -34,8 +34,8 @@ jobs:
         else
           pip install requests pandas numpy urllib3 beautifulsoup4 tqdm efinance playwright
         fi
-        # 安装 Playwright 浏览器
-        playwright install chromium
+        # 修正：使用 python -m 运行 playwright 模块
+        python -m playwright install chromium
 
     - name: Cache fund data
       uses: actions/cache@v4
@@ -72,3 +72,4 @@ jobs:
           screener_output.log
           recommended_cn_funds.csv
           debug_fund_metrics.csv
+        retention-days: 7

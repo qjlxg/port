@@ -32,10 +32,9 @@ jobs:
         if [ -f requirements.txt ]; then
           pip install -r requirements.txt
         else
-          python -m pip install --upgrade pip
-          
           pip install requests pandas numpy urllib3 beautifulsoup4 tqdm efinance playwright
-          python -m playwright install chromium
+        fi
+        python -m playwright install chromium
 
     - name: Cache fund data
       uses: actions/cache@v4

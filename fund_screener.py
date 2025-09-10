@@ -151,23 +151,32 @@ def get_net_values_from_pingzhongdata(code, start_date, end_date):
         return pd.DataFrame(), None
 
 def get_net_values_from_lsjz(code, start_date, end_date):
-    url = f"http://fund.eastmoney.com/f10/lsjz?fundCode={code}&pageIndex=1&pageSize=50000"
+    url = f"http://fund.eastmoney.com/f10/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=50000"
     headers = {
         'User-Agent': random.choice(USER_AGENTS),
-        'Referer': f'http://fund.eastmoney.com/f10/jjfl_{code}.html',
+        'Referer': f'http://fund.eastmoney.com/{code}.html',
         'Accept': 'application/json, text/javascript, */*; q=0.01',
         'X-Requested-With': 'XMLHttpRequest'
     }
     try:
         response = session.get(url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
-        data_str_match = re.search(r'var\s+apidata=\{content:"(.*?)",', response.text, re.DOTALL)
-        if not data_str_match:
+        match = re.search(r'var apidata=\{ content:"(.*?)",', response.text, re.DOTALL)
+        if not match:
             return pd.DataFrame(), None
-        json_data_str = data_str_match.group(1).replace("\\", "")
-        data = json.loads(json_data_str)
-        if 'LSJZList' in data and data['LSJZList']:
-            df = pd.DataFrame(data['LSJZList']).rename(columns={'FSRQ': 'date', 'DWJZ': 'net_value'})
+        content = match.group(1).replace('\\', '')
+        soup = BeautifulSoup(content, 'html.parser')
+        rows = soup.find_all('tr')[1:]  # 跳过表头
+        data = []
+        for row in rows:
+            cols = row.find_all('td')
+            if len(cols) >= 2:
+                date = cols[0].text.strip()
+                net_value = cols[1].text.strip()
+                if date and net_value:
+                    data.append({'date': date, 'net_value': net_value})
+        if data:
+            df = pd.DataFrame(data)
             df['date'] = pd.to_datetime(df['date'])
             df['net_value'] = pd.to_numeric(df['net_value'], errors='coerce')
             df = df[(df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))]
@@ -211,7 +220,7 @@ def get_fund_fee(code):
         'X-Requested-With': 'XMLHttpRequest'
     }
     try:
-        response = session.get(url, headers=headers, timeout=TIMOUT)
+        response = session.get(url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
         fee_match = re.search(r'data_fundTribble\.ManagerFee=\'([\d.]+)\'', response.text)
         fee = float(fee_match.group(1)) if fee_match else 1.5
@@ -220,7 +229,7 @@ def get_fund_fee(code):
         print(f"    × 获取管理费失败: {e}", flush=True)
         return 1.5
 
-# 步骤 5: 获取基金最新持仓（修复版）
+# 步骤 5: 获取基金最新持仓
 def get_fund_holdings(code):
     # 主接口：pingzhongdata
     url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js?v={int(time.time() * 1000)}"
@@ -477,38 +486,37 @@ def main():
     print(f">>> 共 {total_funds} 只基金待处理（{', '.join(FUND_TYPE_FILTER)}）。", flush=True)
 
     # 获取市场指数数据
-    index_code = '000300'  # 沪深300
+    index_codes = ['000300', '000905', '000001']  # 沪深300、中证500、上证指数
     index_df = pd.DataFrame()
-    cache_file = os.path.join(CACHE_DIR, f"index_{index_code}.pkl")
-    if os.path.exists(cache_file):
-        with open(cache_file, "rb") as f:
-            data = pickle.load(f)
-            index_df, _, timestamp = data if len(data) == 3 else (data[0], data[1], 0)
-        if not index_df.empty and (datetime.now().timestamp() - timestamp) < 24 * 3600:
-            print(f"    √ 从缓存加载指数 {index_code} 数据。", flush=True)
-    else:
+    for index_code in index_codes:
+        cache_file = os.path.join(CACHE_DIR, f"index_{index_code}.pkl")
+        if os.path.exists(cache_file):
+            with open(cache_file, "rb") as f:
+                data = pickle.load(f)
+                index_df, _, timestamp = data if len(data) == 3 else (data[0], data[1], 0)
+            if not index_df.empty and (datetime.now().timestamp() - timestamp) < 24 * 3600:
+                print(f"    √ 从缓存加载指数 {index_code} 数据。", flush=True)
+                break
         try:
             index_df, _ = get_net_values_from_pingzhongdata(index_code, start_date, end_date)
-            if index_df.empty:
-                print(f"    × 无法获取市场指数 {index_code} 数据，尝试备用指数。", flush=True)
-                index_code_fallback = '000001'  # 上证指数
-                index_df, _ = get_net_values_from_lsjz(index_code_fallback, start_date, end_date)
-                if index_df.empty:
-                    print(f"    × 无法获取市场指数 {index_code_fallback} 数据，贝塔系数将不可用。", flush=True)
-                else:
-                    cache_file = os.path.join(CACHE_DIR, f"index_{index_code_fallback}.pkl")
-                    with open(cache_file, "wb") as f:
-                        pickle.dump((index_df, None, datetime.now().timestamp()), f)
-            else:
+            if not index_df.empty:
                 with open(cache_file, "wb") as f:
                     pickle.dump((index_df, None, datetime.now().timestamp()), f)
+                break
+            index_df, _ = get_net_values_from_lsjz(index_code, start_date, end_date)
+            if not index_df.empty:
+                with open(cache_file, "wb") as f:
+                    pickle.dump((index_df, None, datetime.now().timestamp()), f)
+                break
         except Exception as e:
-            print(f"    × 获取市场指数数据异常: {e}，贝塔系数将不可用。", flush=True)
+            print(f"    × 获取市场指数 {index_code} 数据失败: {e}", flush=True)
+    if index_df.empty:
+        print("    × 所有指数数据均不可用，贝塔系数将不可用。", flush=True)
 
     # 并行处理基金
     results = []
     debug_data = []
-    with ThreadPoolExecutor(max_workers=5) as executor:  # 降低并发数
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(process_fund, row, start_date, end_date, index_df, total_funds, idx)
                    for idx, row in enumerate(funds_df.itertuples(index=False), 1)]
         for future in tqdm(futures, desc="处理基金", total=total_funds):

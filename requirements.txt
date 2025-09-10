@@ -4,3 +4,4 @@ numpy
 urllib3
 beautifulsoup4
 tqdm
+efinance

@@ -32,11 +32,11 @@ jobs:
         if [ -f requirements.txt ]; then
           pip install -r requirements.txt
         else
-          # 确保安装 playwright 而不是 selenium
+          pip install playwright
+          playwright install
           pip install requests pandas numpy urllib3 beautifulsoup4 tqdm efinance playwright
         fi
-        # 使用 python -m 运行 playwright 模块以避免 "command not found"
-        python -m playwright install chromium
+
 
     - name: Cache fund data
       uses: actions/cache@v4

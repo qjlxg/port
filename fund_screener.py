@@ -26,7 +26,7 @@ TIMEOUT = 15  # 网络请求超时时间（秒）
 # 基金类型筛选，可选：'全部'，'混合型'，'股票型'，'指数型'，'债券型'，'QDII'，'FOF'
 # 您可以设置为单一字符串，如 '混合型'
 # 也可以设置为列表，如 ['混合型', '股票型', '指数型']
-FUND_TYPE_FILTER = ['混合型', '股票型', '指数型']
+FUND_TYPE_FILTER = [ '股票型', '指数型']
 
 # 配置 requests 重试机制
 session = requests.Session()
@@ -176,6 +176,34 @@ def get_fund_fee(code):
     except requests.exceptions.RequestException:
         return 1.5
 
+# 新增步骤: 获取基金经理信息
+def get_fund_manager_info(code):
+    """从 fund.eastmoney.com/pingzhongdata/ 接口获取基金经理信息，包括姓名和从业年限，并评估稳定性。"""
+    url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js?v={int(time.time() * 1000)}"
+    headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': f'http://fund.eastmoney.com/{code}.html'}
+    try:
+        response = session.get(url, headers=headers, timeout=TIMEOUT)
+        response.raise_for_status()
+        manager_match = re.search(r'Data_currentFundManager\s*=\s*(\[.*?\]);', response.text, re.DOTALL)
+        if manager_match:
+            manager_list = json.loads(manager_match.group(1))
+            if manager_list:
+                primary_manager = manager_list[0]  # 取首位经理
+                name = primary_manager.get('name', 'N/A')
+                experience_years = primary_manager.get('workTime', 0) / 365  # workTime 是天数，转成年
+                experience_years = round(experience_years, 1)
+                # 评估稳定性
+                if experience_years > 10:
+                    stability = '高稳定性'
+                elif experience_years >= 5:
+                    stability = '中等稳定性'
+                else:
+                    stability = '低稳定性'
+                return name, experience_years, stability
+        return 'N/A', 0, '未知'
+    except Exception:
+        return 'N/A', 0, '未知'
+
 # 步骤 5: 获取基金最新持仓
 def get_fund_holdings(code):
     """从天天基金网获取基金最新持仓信息。"""
@@ -266,7 +294,7 @@ def calculate_metrics(net_df, start_date, end_date, index_df):
 # 步骤 7: 增强持仓分析 - 行业分布与集中度
 def analyze_holdings(holdings):
     """
-    分析基金持仓的行业分布和集中度。
+    分析基金持仓的行业分布和集中度，并评估集中度风险。
     """
     industry_counts = {}
     industry_ratios = {}
@@ -289,12 +317,19 @@ def analyze_holdings(holdings):
     # 计算行业集中度（前三大行业占比）
     top3_concentration = industry_df['占比 (%)'].iloc[:3].sum() if len(industry_df) >= 3 else industry_df['占比 (%)'].sum()
     
-    return industry_df, round(top3_concentration, 2)
-
+    # 评估集中度风险
+    if top3_concentration > 60:
+        concentration_risk = '高风险（集中度过高）'
+    elif top3_concentration > 40:
+        concentration_risk = '中等风险'
+    else:
+        concentration_risk = '低风险'
+    
+    return industry_df, round(top3_concentration, 2), concentration_risk
 
 # 主函数
 def main():
-    print(">>> 程序启动：正在初始化基金筛选工具...", flush=True)
+    print(">>> 程序启动：正在初始化基金筛选工具（增强版，一键分析）...", flush=True)
     start_time = time.time()
     end_date = datetime.now().strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=3 * 365)).strftime('%Y-%m-%d')
@@ -330,7 +365,6 @@ def main():
                 print(f"    × 无法获取市场指数 {index_code_fallback} 的历史数据，将无法计算贝塔系数。", flush=True)
     except Exception as e:
         print(f"    × 获取市场指数数据时发生异常: {e}。贝塔系数将无法计算。", flush=True)
-
 
     for idx, row in funds_df.iterrows():
         code = row['code']
@@ -429,41 +463,61 @@ def main():
         debug_df.to_csv('debug_fund_metrics.csv', index=False, encoding='utf-8-sig')
         print(f"\n调试信息已保存至 debug_fund_metrics.csv 文件，共计 {len(debug_df)} 条记录。", flush=True)
 
-    # 输出结果并获取持仓信息
+    # 输出结果并进行一键分析
     if results:
         final_df = pd.DataFrame(results).sort_values('综合评分', ascending=False).reset_index(drop=True)
         final_df.index = final_df.index + 1
         
-        print("\n--- 步骤4: 筛选完成，开始输出推荐基金列表 ---", flush=True)
-        print(final_df, flush=True)
-        final_df.to_csv('recommended_cn_funds.csv', index=True, index_label='排名', encoding='utf-8-sig')
-        print("\n>>> 推荐结果已保存至 recommended_cn_funds.csv 文件。", flush=True)
-
+        print("\n--- 步骤4: 筛选完成，开始一键分析推荐基金 ---", flush=True)
+        
+        # 新增列用于一键分析结果
+        final_df['行业集中度 (%)'] = None
+        final_df['集中度风险'] = None
+        final_df['基金经理'] = None
+        final_df['从业年限 (年)'] = None
+        final_df['经理稳定性'] = None
+        
         for idx, row in final_df.iterrows():
             code = row['基金代码']
             name = row['基金名称']
             
-            print(f"\n--- 正在分析基金 {name} ({code}) 的持仓详情 ---", flush=True)
+            print(f"\n--- 正在一键分析基金 {name} ({code}) ---", flush=True)
             
             try:
+                # 获取持仓并分析行业
                 holdings = get_fund_holdings(code)
                 if holdings:
                     print(f"    √ 成功获取到最新十大持仓。", flush=True)
-                    print("      - 持仓股票:", flush=True)
-                    for holding in holdings:
-                        print(f"        股票名称: {holding.get('name', 'N/A')}, 股票代码: {holding.get('code', 'N/A')}, 占比: {holding.get('ratio', 'N/A')}", flush=True)
-                    
-                    industry_df, concentration = analyze_holdings(holdings)
-                    print(f"\n      - 行业分析:", flush=True)
-                    print(industry_df.to_string(index=False), flush=True)
-                    print(f"        行业集中度（前三大行业占比）: {concentration:.2f}%", flush=True)
+                    industry_df, concentration, concentration_risk = analyze_holdings(holdings)
+                    final_df.at[idx, '行业集中度 (%)'] = concentration
+                    final_df.at[idx, '集中度风险'] = concentration_risk
+                    print(f"      - 行业集中度: {concentration:.2f}% ({concentration_risk})", flush=True)
                 else:
                     print(f"    × 未能获取到最新持仓数据。", flush=True)
+                    final_df.at[idx, '行业集中度 (%)'] = 'N/A'
+                    final_df.at[idx, '集中度风险'] = '未知'
+                
+                # 获取基金经理信息
+                manager_name, experience_years, stability = get_fund_manager_info(code)
+                final_df.at[idx, '基金经理'] = manager_name
+                final_df.at[idx, '从业年限 (年)'] = experience_years
+                final_df.at[idx, '经理稳定性'] = stability
+                print(f"      - 基金经理: {manager_name}, 从业年限: {experience_years} 年 ({stability})", flush=True)
+                
             except Exception as e:
-                print(f"    × 获取持仓数据时发生异常：{e}", flush=True)
+                print(f"    × 一键分析时发生异常：{e}", flush=True)
+                final_df.at[idx, '行业集中度 (%)'] = 'N/A'
+                final_df.at[idx, '集中度风险'] = '未知'
+                final_df.at[idx, '基金经理'] = 'N/A'
+                final_df.at[idx, '从业年限 (年)'] = 0
+                final_df.at[idx, '经理稳定性'] = '未知'
             
             time.sleep(random.uniform(1, 3)) # 随机延时
-            
+        
+        print("\n--- 推荐基金列表（含一键分析结果） ---", flush=True)
+        print(final_df, flush=True)
+        final_df.to_csv('recommended_cn_funds.csv', index=True, index_label='排名', encoding='utf-8-sig')
+        print("\n>>> 推荐结果（含一键分析）已保存至 recommended_cn_funds.csv 文件。您可以直接查看报告，了解每只基金的风险点和优势。", flush=True)
     else:
         print("\n没有找到符合条件的基金，建议调整筛选条件。", flush=True)
         

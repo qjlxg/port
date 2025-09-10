@@ -467,7 +467,7 @@ def process_fund(row, start_date, end_date, index_df, total_funds, idx):
         debug_info['筛选状态'] = '未通过'
         debug_info['失败原因'] = ', '.join(reasons)
         debug_info['处理耗时'] = round(time.time() - start_time, 2)
-        print(f"    × 未通过筛选。原因: {', '.join(reasons)}", flush=True)
+        print(f"    × 未通过筛选。原因: {' / '.join(reasons)}", flush=True)
         return None, debug_info
 
     fee = get_fund_fee(code)

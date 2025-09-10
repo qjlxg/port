@@ -5,4 +5,4 @@ urllib3
 beautifulsoup4
 tqdm
 efinance
-selenium
+playwright

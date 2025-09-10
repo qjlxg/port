@@ -113,9 +113,9 @@ def get_fund_net_values(fund_code, cache_path):
             return pd.DataFrame(data), data[-1]['value'], 'cache'
 
     try:
-        # 修正: 将 start 参数改为 beg 参数
+        # 修正: 将 beg 参数改为 start 参数，因为日志显示 beg 参数不可用
         start_date_str = (datetime.now() - timedelta(days=3*365)).strftime('%Y%m%d')
-        data = ef.fund.get_quote_history(fund_code, beg=start_date_str)
+        data = ef.fund.get_quote_history(fund_code, start=start_date_str)
         
         if data is None or '净值日期' not in data.columns or len(data) == 0:
             print(f"    调试: {fund_code} efinance 获取净值数据为空或格式错误。", flush=True)
@@ -442,13 +442,13 @@ def main():
     index_code = '000300'  # 沪深300
     index_df = pd.DataFrame()
     try:
-        # 修正: 将 start 参数改为 beg 参数
-        index_data = ef.fund.get_quote_history(index_code, beg=start_date_str)
+        # 修正: 将 beg 参数改为 start 参数，因为日志显示 beg 参数不可用
+        index_data = ef.fund.get_quote_history(index_code, start=start_date_str)
         if index_data is None or index_data.empty:
             print(f"    × 无法获取市场指数 {index_code} 数据，尝试备用指数。", flush=True)
             index_code_fallback = '000001'  # 上证指数
-            # 修正: 将 start 参数改为 beg 参数
-            index_data = ef.fund.get_quote_history(index_code_fallback, beg=start_date_str)
+            # 修正: 将 beg 参数改为 start 参数，因为日志显示 beg 参数不可用
+            index_data = ef.fund.get_quote_history(index_code_fallback, start=start_date_str)
             if index_data is None or index_data.empty:
                 print(f"    × 无法获取市场指数 {index_code_fallback} 数据，贝塔系数将不可用。", flush=True)
             else:

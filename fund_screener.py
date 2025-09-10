@@ -41,11 +41,26 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0'
 ]
 
-# 申万行业分类数据（与原始代码一致）
+# 申万行业分类数据（扩展版，添加更多股票以提高准确性）
 SW_INDUSTRY_MAPPING = {
     '600519': '食品饮料', '000858': '食品饮料', '002475': '家用电器', '002415': '家用电器',
     '300750': '计算机', '300059': '传媒', '002460': '汽车', '600036': '金融',
-    '600276': '医药生物', '600030': '金融'
+    '600276': '医药生物', '600030': '金融',
+    # 扩展：金融
+    '000001': '金融', '600000': '金融', '601318': '金融', '601166': '金融',
+    # 扩展：家用电器
+    '000333': '家用电器', '000651': '家用电器', '600690': '家用电器',
+    # 扩展：食品饮料
+    '002304': '食品饮料', '000568': '食品饮料', '600809': '食品饮料', '603288': '食品饮料',
+    # 扩展：医药生物
+    '300760': '医药生物',
+    # 扩展：农林牧渔
+    '002714': '农林牧渔',
+    # 扩展：电力设备
+    '601012': '电力设备', '300274': '电力设备',
+    # 扩展：汽车
+    '000858': '食品饮料', '002460': '汽车',
+    # 可以继续添加更多
 }
 
 # 数据缓存目录
@@ -193,36 +208,50 @@ def get_fund_fee(code):
     except requests.exceptions.RequestException:
         return 1.5
 
-# 步骤 5: 获取基金最新持仓
+# 步骤 5: 获取基金最新持仓（修复版）
 def get_fund_holdings(code):
     cache_file = os.path.join(CACHE_DIR, f"holdings_{code}.pkl")
     if os.path.exists(cache_file):
         with open(cache_file, "rb") as f:
             return pickle.load(f)
     
-    url = f"http://fund.eastmoney.com/DataCenter/Fund/JJZCHoldDetail.aspx?fundCode={code}"
+    # 优先使用备用接口
+    urls = [
+        f"http://fundf10.eastmoney.com/jjcc_{code}.html",  # 备用接口
+        f"http://fund.eastmoney.com/DataCenter/Fund/JJZCHoldDetail.aspx?fundCode={code}"  # 原接口
+    ]
     headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': f'http://fund.eastmoney.com/f10/jjcc_{code}.html'}
-    try:
-        response = session.get(url, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        holdings = []
-        stock_table = soup.find('table', {'class': 'm-table'})
-        if stock_table:
-            for row in stock_table.find_all('tr')[1:]:
-                cells = row.find_all('td')
-                if len(cells) >= 4:
-                    holdings.append({
-                        'name': cells[1].text.strip(),
-                        'code': cells[2].text.strip(),
-                        'ratio': cells[3].text.strip()
-                    })
-        if holdings:
-            with open(cache_file, "wb") as f:
-                pickle.dump(holdings, f)
-        return holdings
-    except (requests.exceptions.RequestException, Exception):
-        return []
+    for url in urls:
+        try:
+            response = session.get(url, headers=headers, timeout=TIMEOUT)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            holdings = []
+            # 尝试多个表格类名
+            stock_table = (soup.find('table', {'class': 'w782 comm tzxq'}) or 
+                           soup.find('table', {'class': 'm-table'}) or 
+                           soup.find('table', class_=lambda x: x and 'hold' in str(x).lower()))
+            if stock_table:
+                for row in stock_table.find_all('tr')[1:10]:  # 取前10行（十大持仓）
+                    cells = row.find_all('td')
+                    if len(cells) >= 4:
+                        holdings.append({
+                            'name': cells[1].text.strip(),  # 股票名称
+                            'code': cells[2].text.strip(),  # 股票代码
+                            'ratio': cells[3].text.strip()  # 持仓比例
+                        })
+                if holdings:
+                    with open(cache_file, "wb") as f:
+                        pickle.dump(holdings, f)
+                    return holdings
+            print(f"    调试: {url} 表格解析失败，尝试下一个接口。", flush=True)
+        except requests.exceptions.RequestException as e:
+            print(f"    调试: {url} 请求失败: {e}", flush=True)
+            continue
+        except Exception as e:
+            print(f"    调试: {url} 解析异常: {e}", flush=True)
+            continue
+    return []
 
 # 步骤 6: 计算贝塔系数
 def calculate_beta(fund_returns, market_returns):
@@ -287,7 +316,6 @@ def analyze_holdings(holdings):
 
 # 步骤 10: 处理单支基金
 def process_fund(row, start_date, end_date, index_df, total_funds, idx):
-    # 修复：使用命名元组属性访问（row.code 而非 row['code']）
     code = row.code
     name = row.name
     fund_type = row.type

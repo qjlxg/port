@@ -113,7 +113,10 @@ def get_fund_net_values(fund_code, cache_path):
             return pd.DataFrame(data), data[-1]['value'], 'cache'
 
     try:
-        data = ef.fund.get_quote_history(fund_code, start=datetime.now() - timedelta(days=3*365))
+        # 修正: 将 start 参数改为 beg 参数
+        start_date_str = (datetime.now() - timedelta(days=3*365)).strftime('%Y%m%d')
+        data = ef.fund.get_quote_history(fund_code, beg=start_date_str)
+        
         if data is None or '净值日期' not in data.columns or len(data) == 0:
             print(f"    调试: {fund_code} efinance 获取净值数据为空或格式错误。", flush=True)
             return pd.DataFrame(), None, 'none'
@@ -423,8 +426,8 @@ def process_fund(row, start_date, end_date, index_df, total_funds, idx):
 def main():
     print(">>> 基金筛选工具启动...", flush=True)
     start_time = time.time()
-    end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - timedelta(days=3 * 365)).strftime('%Y-%m-%d')
+    end_date_str = datetime.now().strftime('%Y%m%d')
+    start_date_str = (datetime.now() - timedelta(days=3 * 365)).strftime('%Y%m%d')
 
     # 获取基金列表
     funds_df = get_all_funds_from_eastmoney()
@@ -439,11 +442,13 @@ def main():
     index_code = '000300'  # 沪深300
     index_df = pd.DataFrame()
     try:
-        index_data = ef.fund.get_quote_history(index_code, start=datetime.now() - timedelta(days=3*365))
+        # 修正: 将 start 参数改为 beg 参数
+        index_data = ef.fund.get_quote_history(index_code, beg=start_date_str)
         if index_data is None or index_data.empty:
             print(f"    × 无法获取市场指数 {index_code} 数据，尝试备用指数。", flush=True)
             index_code_fallback = '000001'  # 上证指数
-            index_data = ef.fund.get_quote_history(index_code_fallback, start=datetime.now() - timedelta(days=3*365))
+            # 修正: 将 start 参数改为 beg 参数
+            index_data = ef.fund.get_quote_history(index_code_fallback, beg=start_date_str)
             if index_data is None or index_data.empty:
                 print(f"    × 无法获取市场指数 {index_code_fallback} 数据，贝塔系数将不可用。", flush=True)
             else:
@@ -457,7 +462,7 @@ def main():
     results = []
     debug_data = []
     with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(process_fund, row, start_date, end_date, index_df, total_funds, idx)
+        futures = [executor.submit(process_fund, row, start_date_str, end_date_str, index_df, total_funds, idx)
                    for idx, row in enumerate(funds_df.itertuples(index=False), 1)]
         for future in tqdm(futures, desc="处理基金", total=total_funds):
             try:

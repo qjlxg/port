@@ -189,7 +189,7 @@ def get_net_values_from_lsjz(code, start_date, end_date):
         if 'LSJZList' in data and data['LSJZList']:
             df = pd.DataFrame(data['LSJZList']).rename(columns={'FSRQ': 'date', 'DWJZ': 'net_value'})
             df['date'] = pd.to_datetime(df['date'])
-            df['net_value'] = pd.to_numeric(df['net_value'], errors='coerce')
+            df['net_value'] = pd.to_numeric(df['DWJZ'], errors='coerce')
             df = df[(df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))]
             df = df.sort_values('date').dropna(subset=['net_value']).reset_index(drop=True)
             latest_value = df['net_value'].iloc[-1] if not df.empty else None
@@ -343,7 +343,8 @@ def get_fund_holdings(code):
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             url = f"http://fundf10.eastmoney.com/ccmx_{code}.html"
-            page.goto(url)
+            # 增加 page.goto 的超时时间
+            page.goto(url, timeout=60000)
             # 改进选择器并增加超时时间
             page.wait_for_selector('div.boxitem table', timeout=60000)
             

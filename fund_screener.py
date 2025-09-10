@@ -26,7 +26,7 @@ TIMEOUT = 15  # 网络请求超时时间（秒）
 # 基金类型筛选，可选：'全部'，'混合型'，'股票型'，'指数型'，'债券型'，'QDII'，'FOF'
 # 您可以设置为单一字符串，如 '混合型'
 # 也可以设置为列表，如 ['混合型', '股票型', '指数型']
-FUND_TYPE_FILTER = [ '混合型']
+FUND_TYPE_FILTER = [ '股票型']
 
 # 配置 requests 重试机制
 session = requests.Session()

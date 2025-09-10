@@ -17,19 +17,22 @@ import warnings
 import traceback
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # 忽略警告
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # 筛选条件
-MIN_RETURN = 3.0  # 年化收益率 ≥ 3%
-MAX_VOLATILITY = 25.0  # 波动率 ≤ 25%
-MIN_SHARPE = 0.2  # 夏普比率 ≥ 0.2
-MAX_FEE = 2.5  # 管理费 ≤ 2.5%
-RISK_FREE_RATE = 3.0  # 无风险利率 3%
-MIN_DAYS = 100  # 最低数据天数
-TIMEOUT = 10  # 网络请求超时时间（秒）
-FUND_TYPE_FILTER = ['混合型', '股票型', '指数型']  # 基金类型筛选
+MIN_RETURN = 3.0
+MAX_VOLATILITY = 25.0
+MIN_SHARPE = 0.2
+MAX_FEE = 2.5
+RISK_FREE_RATE = 3.0
+MIN_DAYS = 100
+TIMEOUT = 10
+FUND_TYPE_FILTER = ['混合型', '股票型', '指数型']
 
 # 配置 requests 重试机制
 session = requests.Session()
@@ -68,6 +71,75 @@ SW_INDUSTRY_MAPPING = {
 CACHE_DIR = "fund_data_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+def get_fund_holdings(code, retries=2):
+    cache_file = os.path.join(CACHE_DIR, f"holdings_{code}.pkl")
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "rb") as f:
+                holdings = pickle.load(f)
+            print(f"    调试: 从缓存加载 {code} 持仓，{len(holdings)} 条记录。", flush=True)
+            return holdings
+        except Exception:
+            print(f"    调试: 缓存文件 {cache_file} 损坏，将重新获取。", flush=True)
+
+    url = f"https://fundf10.eastmoney.com/ccmx_{code}.html"
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument(f"user-agent={random.choice(USER_AGENTS)}")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("accept=text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+    options.add_argument("referer=https://fund.eastmoney.com/")
+
+    for attempt in range(retries + 1):
+        driver = None
+        try:
+            driver = webdriver.Chrome(options=options)
+            driver.get(url)
+            # 等待 cctable 内的表格加载完成
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "#cctable table"))
+            )
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+            stock_table = soup.select_one('#cctable table')
+            holdings = []
+            if stock_table:
+                for row in stock_table.find_all('tr')[1:11]:  # 取前10条
+                    cells = row.find_all('td')
+                    if len(cells) >= 7:
+                        code_text = cells[1].text.strip()
+                        if code_text and code_text.isdigit() and len(code_text) == 6:
+                            try:
+                                ratio = float(cells[5].text.strip().replace('%', '')) if cells[5].text.strip() else 0
+                            except ValueError:
+                                ratio = 0
+                            holdings.append({
+                                'name': cells[2].text.strip(),
+                                'code': code_text,
+                                'ratio': str(ratio)
+                            })
+                if holdings:
+                    print(f"    调试: 从 Selenium {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
+                    with open(cache_file, "wb") as f:
+                        pickle.dump(holdings, f)
+                    return holdings
+                print(f"    调试: Selenium {url} 未找到持仓表格。", flush=True)
+            else:
+                print(f"    调试: Selenium {url} 未找到 #cctable table。", flush=True)
+        except Exception as e:
+            print(f"    调试: Selenium 请求或解析失败 (尝试 {attempt + 1}/{retries + 1}): {e}", flush=True)
+            if attempt < retries:
+                time.sleep(2)  # 等待后重试
+                continue
+        finally:
+            if driver:
+                driver.quit()
+    
+    print(f"    调试: {code} 无法获取持仓数据。", flush=True)
+    return []
+
+# 其余函数保持不变
 def get_all_funds_from_eastmoney():
     cache_file = os.path.join(CACHE_DIR, "fund_list.pkl")
     if os.path.exists(cache_file):
@@ -119,7 +191,7 @@ def get_fund_net_values(code, start_date, end_date):
             if not net_df.empty and len(net_df) >= MIN_DAYS:
                 return net_df, latest_value, 'cache'
         except Exception:
-            pass  # 如果缓存文件损坏，继续尝试其他接口
+            pass
 
     df, latest_value = get_net_values_from_pingzhongdata(code, start_date, end_date)
     if not df.empty and len(df) >= MIN_DAYS:
@@ -199,7 +271,7 @@ def get_net_values_from_lsjz(code, start_date, end_date):
     except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError) as e:
         print(f"    调试: {url} 接口请求或JSON解析失败: {e}", flush=True)
         return pd.DataFrame(), None
-    
+
 def get_fund_realtime_estimate(code):
     cache_file = os.path.join(CACHE_DIR, f"realtime_estimate_{code}.pkl")
     if os.path.exists(cache_file):
@@ -266,114 +338,6 @@ def get_fund_fee(code):
     except Exception as e:
         print(f"    调试: 获取管理费 {code} 解析异常: {e}", flush=True)
         return 1.5
-
-def get_fund_holdings(code):
-    cache_file = os.path.join(CACHE_DIR, f"holdings_{code}.pkl")
-    if os.path.exists(cache_file):
-        try:
-            with open(cache_file, "rb") as f:
-                holdings = pickle.load(f)
-            print(f"    调试: 从缓存加载 {code} 持仓，{len(holdings)} 条记录。", flush=True)
-            return holdings
-        except Exception:
-            print(f"    调试: 缓存文件 {cache_file} 损坏，将重新获取。", flush=True)
-
-    headers = {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Referer': f'http://fundf10.eastmoney.com/ccmx_{code}.html',
-        'Accept': 'application/json, text/javascript, */*',
-        'Connection': 'keep-alive'
-    }
-
-    # 尝试 JSON API
-    json_api_url = f"https://fund.eastmoney.com/Data/FundStockPosition.aspx?code={code}&rt={int(time.time() * 1000)}"
-    try:
-        response = session.get(json_api_url, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        data = response.json()
-        holdings = []
-        if data and 'data' in data:
-            for item in data['data'][:10]:  # 取前10条
-                holdings.append({
-                    'name': item.get('stock_name', 'N/A'),
-                    'code': item.get('stock_code', 'N/A'),
-                    'ratio': item.get('ratio', '0').replace('%', '')
-                })
-            if holdings:
-                print(f"    调试: 从 JSON API {json_api_url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
-                with open(cache_file, "wb") as f:
-                    pickle.dump(holdings, f)
-                return holdings
-        print(f"    调试: JSON API {json_api_url} 未返回有效数据。", flush=True)
-    except Exception as e:
-        print(f"    调试: JSON API 请求或解析失败: {e}", flush=True)
-
-    # 回退到 HTML API
-    html_api_url = f"http://fund.eastmoney.com/Data_holdStock.html?fundCode={code}&pageIndex=1&pageSize=10"
-    try:
-        time.sleep(random.uniform(0.1, 0.5))
-        response = session.get(html_api_url, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        stock_table = soup.find('table', class_=lambda x: x and ('tzxq_table' in x or 'w782' in x or 'comm' in x or 'hold' in x.lower()))
-        if stock_table:
-            holdings = []
-            for row in stock_table.find_all('tr')[1:11]:
-                cells = row.find_all('td')
-                if len(cells) >= 4:
-                    code_text = cells[2].text.strip()
-                    if code_text and code_text.isdigit() and len(code_text) == 6:
-                        holdings.append({
-                            'name': cells[1].text.strip(),
-                            'code': code_text,
-                            'ratio': cells[3].text.strip().replace('%', '')
-                        })
-            if holdings:
-                print(f"    调试: 从 HTML API {html_api_url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
-                with open(cache_file, "wb") as f:
-                    pickle.dump(holdings, f)
-                return holdings
-        print(f"    调试: HTML API {html_api_url} 未找到表格数据。", flush=True)
-    except Exception as e:
-        print(f"    调试: HTML API 请求或解析失败: {e}", flush=True)
-
-    # 回退到 Selenium
-    print(f"    调试: 尝试使用 Selenium 获取 {code} 持仓数据。", flush=True)
-    url = f"http://fundf10.eastmoney.com/ccmx_{code}.html"
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument(f"user-agent={random.choice(USER_AGENTS)}")
-    try:
-        driver = webdriver.Chrome(options=options)
-        driver.get(url)
-        time.sleep(3)  # 等待 JavaScript 加载
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        stock_table = soup.find('table', class_=lambda x: x and ('tzxq_table' in x or 'w782' in x or 'comm' in x or 'hold' in x.lower()))
-        holdings = []
-        if stock_table:
-            for row in stock_table.find_all('tr')[1:11]:
-                cells = row.find_all('td')
-                if len(cells) >= 4:
-                    code_text = cells[2].text.strip()
-                    if code_text and code_text.isdigit() and len(code_text) == 6:
-                        holdings.append({
-                            'name': cells[1].text.strip(),
-                            'code': code_text,
-                            'ratio': cells[3].text.strip().replace('%', '')
-                        })
-            if holdings:
-                print(f"    调试: 从 Selenium 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
-                with open(cache_file, "wb") as f:
-                    pickle.dump(holdings, f)
-                return holdings
-        print(f"    调试: Selenium {url} 未找到表格数据。", flush=True)
-    except Exception as e:
-        print(f"    调试: Selenium 请求或解析失败: {e}", flush=True)
-    finally:
-        driver.quit()
-    
-    print(f"    调试: {code} 所有接口均失败，无持仓数据。", flush=True)
-    return []
 
 def calculate_beta(fund_returns, market_returns):
     if len(fund_returns) < 2 or len(market_returns) < 2:

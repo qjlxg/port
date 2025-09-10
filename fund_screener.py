@@ -1,3 +1,4 @@
+import efinance as ef
 import pandas as pd
 import requests
 import numpy as np
@@ -29,13 +30,13 @@ MIN_DAYS = 100  # 最低数据天数
 TIMEOUT = 10  # 网络请求超时时间（秒）
 FUND_TYPE_FILTER = ['混合型', '股票型', '指数型']  # 基金类型筛选
 
-# 配置 requests 重试机制
+# 配置 requests 重试机制 (efinance自带，可保留以备他用)
 session = requests.Session()
 retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
 session.mount('http://', HTTPAdapter(max_retries=retries))
 session.mount('https://', HTTPAdapter(max_retries=retries))
 
-# 随机 User-Agent 和 Headers
+# 随机 User-Agent 和 Headers (efinance自带，可保留以备他用)
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Safari/605.1.15',
@@ -67,48 +68,37 @@ CACHE_DIR = "fund_data_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 def get_all_funds_from_eastmoney():
+    """使用 efinance 库获取全市场基金列表。"""
     cache_file = os.path.join(CACHE_DIR, "fund_list.pkl")
     if os.path.exists(cache_file):
         try:
             with open(cache_file, "rb") as f:
                 funds_df = pickle.load(f)
-            print(f"    √ 从缓存加载 {len(funds_df)} 只基金。", flush=True)
+            print(f">>> 步骤1: 从缓存加载 {len(funds_df)} 只基金。", flush=True)
             return funds_df
         except Exception as e:
-            print(f"    × 加载基金列表缓存失败: {e}，将重新获取。", flush=True)
-
+            print(f"    × 加载基金列表缓存失败: {e}，将重新获取。", flush=True)
+    
     print(">>> 步骤1: 正在动态获取全市场基金列表...", flush=True)
-    url = "http://fund.eastmoney.com/js/fundcode_search.js"
-    headers = {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Referer': 'http://fund.eastmoney.com/',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Connection': 'keep-alive'
-    }
     try:
-        response = session.get(url, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        content = response.text
-        match = re.search(r'var\s+r\s*=\s*(\[.*?\]);', content, re.DOTALL)
-        if match:
-            fund_data = json.loads(match.group(1))
-            df = pd.DataFrame(fund_data, columns=['code', 'pinyin', 'name', 'type', 'pinyin_full'])
-            df = df[['code', 'name', 'type']].drop_duplicates(subset=['code'])
-            df = df[df['type'].isin(FUND_TYPE_FILTER)].copy()
-            print(f"    √ 获取到 {len(df)} 只{', '.join(FUND_TYPE_FILTER)}基金。", flush=True)
-            with open(cache_file, "wb") as f:
-                pickle.dump(df, f)
-            return df
-        print("    × 未能解析基金列表数据。", flush=True)
-        return pd.DataFrame()
-    except requests.exceptions.RequestException as e:
-        print(f"    × 获取基金列表失败: {e}", flush=True)
-        return pd.DataFrame()
+        # 使用 efinance.fund.get_all_funds 函数
+        df = ef.fund.get_all_funds()
+        # 筛选指定类型的基金
+        df = df[df['基金类型'].isin(FUND_TYPE_FILTER)].copy()
+        # 重命名列以兼容原有代码
+        df = df.rename(columns={'基金代码': 'code', '基金简称': 'name', '基金类型': 'type'})
+        df = df[['code', 'name', 'type']].drop_duplicates(subset=['code'])
+        
+        print(f"    √ 获取到 {len(df)} 只{', '.join(FUND_TYPE_FILTER)}基金。", flush=True)
+        with open(cache_file, "wb") as f:
+            pickle.dump(df, f)
+        return df
     except Exception as e:
-        print(f"    × 解析基金列表时发生异常: {e}", flush=True)
+        print(f"    × 获取基金列表失败: {e}", flush=True)
         return pd.DataFrame()
 
 def get_fund_net_values(code, start_date, end_date):
+    """使用 efinance 库获取基金历史净值。"""
     cache_file = os.path.join(CACHE_DIR, f"net_values_{code}.pkl")
     if os.path.exists(cache_file):
         try:
@@ -117,88 +107,34 @@ def get_fund_net_values(code, start_date, end_date):
             if not net_df.empty and len(net_df) >= MIN_DAYS:
                 return net_df, latest_value, 'cache'
         except Exception:
-            pass  # 如果缓存文件损坏，继续尝试其他接口
-
-    df, latest_value = get_net_values_from_pingzhongdata(code, start_date, end_date)
-    if not df.empty and len(df) >= MIN_DAYS:
-        try:
-            with open(cache_file, "wb") as f:
-                pickle.dump((df, latest_value), f)
-        except Exception:
             pass
-        return df, latest_value, 'pingzhongdata'
-
-    df, latest_value = get_net_values_from_lsjz(code, start_date, end_date)
-    if not df.empty and len(df) >= MIN_DAYS:
-        try:
-            with open(cache_file, "wb") as f:
-                pickle.dump((df, latest_value), f)
-        except Exception:
-            pass
-        return df, latest_value, 'lsjz'
-        
-    return pd.DataFrame(), None, 'None'
-
-def get_net_values_from_pingzhongdata(code, start_date, end_date):
-    url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js?v={int(time.time() * 1000)}"
-    headers = {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Referer': f'http://fund.eastmoney.com/{code}.html',
-        'Accept': 'text/javascript, application/javascript, */*',
-        'Connection': 'keep-alive'
-    }
+    
     try:
-        response = session.get(url, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        net_worth_match = re.search(r'Data_netWorthTrend\s*=\s*(\[.*?\]);', response.text, re.DOTALL)
-        if not net_worth_match:
-            print(f"    调试: {url} 未找到净值数据。", flush=True)
-            return pd.DataFrame(), None
-        
-        net_worth_list = json.loads(net_worth_match.group(1))
-        df = pd.DataFrame(net_worth_list).rename(columns={'x': 'date', 'y': 'net_value'})
-        df['date'] = pd.to_datetime(df['date'], unit='ms')
-        df['net_value'] = pd.to_numeric(df['net_value'], errors='coerce')
+        # 使用 efinance.fund.get_quote_history 函数
+        df = ef.fund.get_quote_history(code)
+        if df.empty:
+            print(f"    调试: {code} efinance 获取净值数据为空。", flush=True)
+            return pd.DataFrame(), None, 'None'
+            
+        # 重命名列以兼容原有代码
+        df = df.rename(columns={'净值日期': 'date', '单位净值': 'net_value'})
+        df['date'] = pd.to_datetime(df['date'])
         df = df[(df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))]
         df = df.sort_values('date').dropna(subset=['net_value']).reset_index(drop=True)
         latest_value = df['net_value'].iloc[-1] if not df.empty else None
-        return df, latest_value
-    except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError) as e:
-        print(f"    调试: {url} 接口请求或JSON解析失败: {e}", flush=True)
-        return pd.DataFrame(), None
-
-def get_net_values_from_lsjz(code, start_date, end_date):
-    url = f"http://fund.eastmoney.com/f10/lsjz?fundCode={code}&pageIndex=1&pageSize=50000"
-    headers = {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Referer': f'http://fund.eastmoney.com/f10/fjcc_{code}.html',
-        'Accept': 'application/json, text/plain, */*',
-        'Connection': 'keep-alive'
-    }
-    try:
-        response = session.get(url, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        data_str_match = re.search(r'var\s+apidata=\{content:"(.*?)",', response.text, re.DOTALL)
-        if not data_str_match:
-            print(f"    调试: {url} 未找到历史净值数据。", flush=True)
-            return pd.DataFrame(), None
         
-        json_data_str = data_str_match.group(1).replace("\\", "")
-        data = json.loads(json_data_str)
-        if 'LSJZList' in data and data['LSJZList']:
-            df = pd.DataFrame(data['LSJZList']).rename(columns={'FSRQ': 'date', 'DWJZ': 'net_value'})
-            df['date'] = pd.to_datetime(df['date'])
-            df['net_value'] = pd.to_numeric(df['net_value'], errors='coerce')
-            df = df[(df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))]
-            df = df.sort_values('date').dropna(subset=['net_value']).reset_index(drop=True)
-            latest_value = df['net_value'].iloc[-1] if not df.empty else None
-            return df, latest_value
-        return pd.DataFrame(), None
-    except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError) as e:
-        print(f"    调试: {url} 接口请求或JSON解析失败: {e}", flush=True)
-        return pd.DataFrame(), None
-    
+        if not df.empty and len(df) >= MIN_DAYS:
+            with open(cache_file, "wb") as f:
+                pickle.dump((df, latest_value), f)
+            return df, latest_value, 'efinance'
+        else:
+            return pd.DataFrame(), None, 'efinance'
+    except Exception as e:
+        print(f"    调试: {code} efinance 获取净值数据异常: {e}", flush=True)
+        return pd.DataFrame(), None, 'None'
+
 def get_fund_realtime_estimate(code):
+    """使用 efinance 库获取基金实时估值。"""
     cache_file = os.path.join(CACHE_DIR, f"realtime_estimate_{code}.pkl")
     if os.path.exists(cache_file):
         try:
@@ -206,35 +142,22 @@ def get_fund_realtime_estimate(code):
                 return pickle.load(f)
         except Exception:
             pass
-    
-    url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={int(time.time() * 1000)}"
-    headers = {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Referer': f'http://fund.eastmoney.com/{code}.html',
-        'Accept': 'application/json, text/javascript, */*',
-        'Connection': 'keep-alive'
-    }
+            
     try:
-        response = session.get(url, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        match = re.search(r'jsonpgz\((.*)\)', response.text, re.DOTALL)
-        if match:
-            json_data = json.loads(match.group(1))
-            gsz = json_data.get('gsz')
-            if gsz:
-                try:
-                    gsz_float = float(gsz)
-                    with open(cache_file, "wb") as f:
-                        pickle.dump(gsz_float, f)
-                    return gsz_float
-                except (ValueError, TypeError):
-                    pass
+        # 使用 efinance.fund.get_realtime_quotes 函数
+        df = ef.fund.get_realtime_quotes(code)
+        if not df.empty:
+            gsz_float = df['估算净值'].iloc[0]
+            with open(cache_file, "wb") as f:
+                pickle.dump(gsz_float, f)
+            return gsz_float
         return None
     except Exception as e:
-        print(f"    调试: 获取实时估值 {code} 异常: {e}", flush=True)
+        print(f"    调试: 获取实时估值 {code} 异常: {e}", flush=True)
         return None
 
 def get_fund_fee(code):
+    """使用 efinance 获取管理费。"""
     cache_file = os.path.join(CACHE_DIR, f"fee_{code}.pkl")
     if os.path.exists(cache_file):
         try:
@@ -243,131 +166,55 @@ def get_fund_fee(code):
         except Exception:
             pass
     
-    url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js?v={int(time.time() * 1000)}"
-    headers = {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Referer': f'http://fund.eastmoney.com/{code}.html',
-        'Accept': 'text/javascript, application/javascript, */*',
-        'Connection': 'keep-alive'
-    }
     try:
-        response = session.get(url, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        fee_match = re.search(r'data_fundTribble\.ManagerFee=\'([\d.]+)\'', response.text)
-        fee = float(fee_match.group(1)) if fee_match else 1.5
+        info_df = ef.fund.get_base_info(code)
+        fee = info_df.loc[info_df['属性'] == '管理费', '值'].iloc[0]
+        fee = float(re.search(r'([\d.]+)', fee).group(1))
+        
         with open(cache_file, "wb") as f:
             pickle.dump(fee, f)
         return fee
-    except requests.exceptions.RequestException:
-        print(f"    调试: 获取管理费 {code} 请求失败。", flush=True)
-        return 1.5
     except Exception as e:
-        print(f"    调试: 获取管理费 {code} 解析异常: {e}", flush=True)
+        print(f"    调试: 获取管理费 {code} 异常: {e}", flush=True)
         return 1.5
 
 def get_fund_holdings(code):
+    """使用 efinance 库获取基金持仓。"""
     cache_file = os.path.join(CACHE_DIR, f"holdings_{code}.pkl")
     if os.path.exists(cache_file):
         try:
             with open(cache_file, "rb") as f:
                 holdings = pickle.load(f)
-            print(f"    调试: 从缓存加载 {code} 持仓，{len(holdings)} 条记录。", flush=True)
+            print(f"    调试: 从缓存加载 {code} 持仓，{len(holdings)} 条记录。", flush=True)
             return holdings
         except Exception:
             pass
-    
-    urls = [
-        f"http://fundf10.eastmoney.com/ccmx_{code}.html",  # 新接口：十大重仓股
-        f"http://fund.eastmoney.com/pingzhongdata/{code}.js",  # JSON 数据
-        f"http://fund.eastmoney.com/{code}.html"  # 基金主页
-    ]
-    headers = {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Referer': f'http://fund.eastmoney.com/{code}.html',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Connection': 'keep-alive'
-    }
-    
-    for url in urls:
-        try:
-            time.sleep(random.uniform(0.1, 0.5))
-            response = session.get(url, headers=headers, timeout=TIMEOUT)
-            response.raise_for_status()
             
-            holdings = []
+    try:
+        # 使用 efinance.fund.get_management_hold_stocks 函数
+        holdings_df = ef.fund.get_management_hold_stocks(code)
+        if holdings_df.empty:
+            print(f"    调试: {code} efinance 获取持仓数据为空。", flush=True)
+            return []
             
-            if 'ccmx_' in url:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                stock_table = (soup.find('table', class_=lambda x: x and 'tzxq_table' in x or 'w782' in x or 'comm' in x) or
-                               soup.find('table', class_=lambda x: x and 'hold' in x.lower()))
-                if stock_table:
-                    for row in stock_table.find_all('tr')[1:11]:
-                        cells = row.find_all('td')
-                        if len(cells) >= 4:
-                            code_text = cells[2].text.strip()
-                            if code_text and code_text.isdigit() and len(code_text) == 6:
-                                holdings.append({
-                                    'name': cells[1].text.strip(),
-                                    'code': code_text,
-                                    'ratio': cells[3].text.strip().replace('%', '')
-                                })
-                    if holdings:
-                        print(f"    调试: {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
-                        with open(cache_file, "wb") as f:
-                            pickle.dump(holdings, f)
-                        return holdings
-                print(f"    调试: {url} 表格解析失败，尝试下一个接口。", flush=True)
-            
-            elif 'pingzhongdata' in url:
-                match = re.search(r'Data_holdStock\s*=\s*(\[.*?\]);', response.text, re.DOTALL)
-                if match:
-                    stock_data = json.loads(match.group(1))
-                    for item in stock_data[:10]:
-                        code = item.get('stockCode', '')
-                        if code and code.isdigit() and len(code) == 6:
-                            holdings.append({
-                                'name': item.get('stockName', '未知'),
-                                'code': code,
-                                'ratio': str(item.get('holdPercent', 0))
-                            })
-                    if holdings:
-                        print(f"    调试: {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
-                        with open(cache_file, "wb") as f:
-                            pickle.dump(holdings, f)
-                        return holdings
-                print(f"    调试: {url} JSON 解析失败，尝试下一个接口。", flush=True)
-            
-            elif f'/{code}.html' in url:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                stock_table = soup.find('table', class_=lambda x: x and 'hold' in x.lower())
-                if stock_table:
-                    for row in stock_table.find_all('tr')[1:11]:
-                        cells = row.find_all('td')
-                        if len(cells) >= 4:
-                            code_text = cells[2].text.strip()
-                            if code_text and code_text.isdigit() and len(code_text) == 6:
-                                holdings.append({
-                                    'name': cells[1].text.strip(),
-                                    'code': code_text,
-                                    'ratio': cells[3].text.strip().replace('%', '')
-                                })
-                    if holdings:
-                        print(f"    调试: {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
-                        with open(cache_file, "wb") as f:
-                            pickle.dump(holdings, f)
-                        return holdings
-                print(f"    调试: {url} 表格解析失败，尝试下一个接口。", flush=True)
+        holdings = []
+        for _, row in holdings_df.iterrows():
+            holdings.append({
+                'name': row['股票名称'],
+                'code': row['股票代码'],
+                'ratio': str(row['持仓占比(%)'])
+            })
+            if len(holdings) >= 10:
+                break
         
-        except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError) as e:
-            print(f"    调试: {url} 请求或解析失败: {e}", flush=True)
-            continue
-        except Exception as e:
-            print(f"    调试: {url} 解析异常: {e}", flush=True)
-            traceback.print_exc()
-            continue
-    
-    print(f"    调试: {code} 所有接口均失败，无持仓数据。", flush=True)
-    return []
+        if holdings:
+            print(f"    调试: efinance 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
+            with open(cache_file, "wb") as f:
+                pickle.dump(holdings, f)
+        return holdings
+    except Exception as e:
+        print(f"    调试: {code} efinance 获取持仓数据异常: {e}", flush=True)
+        return []
 
 def calculate_beta(fund_returns, market_returns):
     if len(fund_returns) < 2 or len(market_returns) < 2:
@@ -452,7 +299,7 @@ def process_fund(row, start_date, end_date, index_df, total_funds, idx):
         debug_info['筛选状态'] = '未通过'
         debug_info['失败原因'] = ', '.join(reasons)
         debug_info['处理耗时'] = round(time.time() - start_time, 2)
-        print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
+        print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
         return None, debug_info
 
     metrics = calculate_metrics(net_df, start_date, end_date, index_df)
@@ -461,7 +308,7 @@ def process_fund(row, start_date, end_date, index_df, total_funds, idx):
         debug_info['筛选状态'] = '未通过'
         debug_info['失败原因'] = ', '.join(reasons)
         debug_info['处理耗时'] = round(time.time() - start_time, 2)
-        print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
+        print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
         return None, debug_info
 
     fee = get_fund_fee(code)
@@ -495,7 +342,7 @@ def process_fund(row, start_date, end_date, index_df, total_funds, idx):
             reasons.append(f"管理费 ({fee}%) > {MAX_FEE}%")
         debug_info['筛选状态'] = '未通过'
         debug_info['失败原因'] = ' / '.join(reasons)
-        print(f"    × 未通过筛选。原因：{' / '.join(reasons)}", flush=True)
+        print(f"    × 未通过筛选。原因：{' / '.join(reasons)}", flush=True)
         return None, debug_info
 
     score = (0.6 * (metrics['annual_return'] / 20) + 0.3 * metrics['sharpe'] + 0.1 * (2 - fee))
@@ -518,7 +365,7 @@ def process_fund(row, start_date, end_date, index_df, total_funds, idx):
         '行业分布': industry_df.to_dict('records') if not industry_df.empty else [],
         '行业集中度 (%)': concentration
     }
-    print(f"    √ 通过筛选，评分: {result['综合评分']:.2f}", flush=True)
+    print(f"    √ 通过筛选，评分: {result['综合评分']:.2f}", flush=True)
     return result, debug_info
 
 def main():
@@ -540,13 +387,13 @@ def main():
     try:
         index_df, _, _ = get_fund_net_values(index_code, start_date, end_date)
         if index_df.empty:
-            print(f"    × 无法获取市场指数 {index_code} 数据，尝试备用指数。", flush=True)
+            print(f"    × 无法获取市场指数 {index_code} 数据，尝试备用指数。", flush=True)
             index_code_fallback = '000001'
             index_df, _, _ = get_fund_net_values(index_code_fallback, start_date, end_date)
             if index_df.empty:
-                print(f"    × 无法获取市场指数 {index_code_fallback} 数据，贝塔系数将不可用。", flush=True)
+                print(f"    × 无法获取市场指数 {index_code_fallback} 数据，贝塔系数将不可用。", flush=True)
     except Exception as e:
-        print(f"    × 获取市场指数数据异常: {e}，贝塔系数将不可用。", flush=True)
+        print(f"    × 获取市场指数数据异常: {e}，贝塔系数将不可用。", flush=True)
 
     results = []
     debug_data = []
@@ -560,7 +407,7 @@ def main():
                 if result:
                     results.append(result)
             except Exception as e:
-                print(f"    × 处理基金时发生异常: {e}", flush=True)
+                print(f"    × 处理基金时发生异常: {e}", flush=True)
                 traceback.print_exc()
 
     if results:
@@ -578,9 +425,9 @@ def main():
             if row['行业分布']:
                 industry_df = pd.DataFrame(row['行业分布'])
                 print(industry_df.to_string(index=False), flush=True)
-                print(f"    行业集中度（前三大行业占比）: {row['行业集中度 (%)']:.2f}%", flush=True)
+                print(f"    行业集中度（前三大行业占比）: {row['行业集中度 (%)']:.2f}%", flush=True)
             else:
-                print("    × 无持仓数据。", flush=True)
+                print("    × 无持仓数据。", flush=True)
     else:
         print("\n>>> 未找到符合条件的基金，建议调整筛选条件。", flush=True)
 

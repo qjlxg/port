@@ -19,13 +19,13 @@ import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # 筛选条件（与原始代码一致）
-MIN_RETURN = 3.0  # 年化收益率 ≥ 3%
+MIN_RETURN = 3.0   # 年化收益率 ≥ 3%
 MAX_VOLATILITY = 25.0  # 波动率 ≤ 25%
-MIN_SHARPE = 0.2  # 夏普比率 ≥ 0.2
-MAX_FEE = 2.5  # 管理费 ≤ 2.5%
-RISK_FREE_RATE = 3.0  # 无风险利率 3%
-MIN_DAYS = 100  # 最低数据天数
-TIMEOUT = 10  # 网络请求超时时间（秒）
+MIN_SHARPE = 0.2   # 夏普比率 ≥ 0.2
+MAX_FEE = 2.5      # 管理费 ≤ 2.5%
+RISK_FREE_RATE = 3.0   # 无风险利率 3%
+MIN_DAYS = 100     # 最低数据天数
+TIMEOUT = 10       # 网络请求超时时间（秒）
 FUND_TYPE_FILTER = ['混合型', '股票型', '指数型']  # 基金类型筛选
 
 # 配置 requests 重试机制
@@ -56,10 +56,13 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 def get_all_funds_from_eastmoney():
     cache_file = os.path.join(CACHE_DIR, "fund_list.pkl")
     if os.path.exists(cache_file):
-        with open(cache_file, "rb") as f:
-            funds_df = pickle.load(f)
-        print(f"    √ 从缓存加载 {len(funds_df)} 只基金。", flush=True)
-        return funds_df
+        try:
+            with open(cache_file, "rb") as f:
+                funds_df = pickle.load(f)
+            print(f"    √ 从缓存加载 {len(funds_df)} 只基金。", flush=True)
+            return funds_df
+        except Exception as e:
+            print(f"    × 加载基金列表缓存失败: {e}", flush=True)
 
     print(">>> 步骤1: 正在动态获取全市场基金列表...", flush=True)
     url = "http://fund.eastmoney.com/js/fundcode_search.js"
@@ -88,10 +91,13 @@ def get_all_funds_from_eastmoney():
 def get_fund_net_values(code, start_date, end_date):
     cache_file = os.path.join(CACHE_DIR, f"net_values_{code}.pkl")
     if os.path.exists(cache_file):
-        with open(cache_file, "rb") as f:
-            net_df, latest_value = pickle.load(f)
-        if not net_df.empty and len(net_df) >= MIN_DAYS:
-            return net_df, latest_value, 'cache'
+        try:
+            with open(cache_file, "rb") as f:
+                net_df, latest_value = pickle.load(f)
+            if not net_df.empty and len(net_df) >= MIN_DAYS:
+                return net_df, latest_value, 'cache'
+        except Exception:
+            pass
 
     df, latest_value = get_net_values_from_pingzhongdata(code, start_date, end_date)
     if not df.empty and len(df) >= MIN_DAYS:
@@ -123,7 +129,7 @@ def get_net_values_from_pingzhongdata(code, start_date, end_date):
         df = df.sort_values('date').dropna(subset=['net_value']).reset_index(drop=True)
         latest_value = df['net_value'].iloc[-1] if not df.empty else None
         return df, latest_value
-    except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError):
+    except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError, ValueError):
         return pd.DataFrame(), None
 
 def get_net_values_from_lsjz(code, start_date, end_date):
@@ -146,16 +152,19 @@ def get_net_values_from_lsjz(code, start_date, end_date):
             latest_value = df['net_value'].iloc[-1] if not df.empty else None
             return df, latest_value
         return pd.DataFrame(), None
-    except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError):
+    except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError, ValueError):
         return pd.DataFrame(), None
 
 # 步骤 3: 获取实时估值
 def get_fund_realtime_estimate(code):
     cache_file = os.path.join(CACHE_DIR, f"realtime_estimate_{code}.pkl")
     if os.path.exists(cache_file):
-        with open(cache_file, "rb") as f:
-            return pickle.load(f)
-    
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            pass
+
     url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={int(time.time() * 1000)}"
     headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': f'http://fund.eastmoney.com/{code}.html'}
     try:
@@ -177,9 +186,12 @@ def get_fund_realtime_estimate(code):
 def get_fund_fee(code):
     cache_file = os.path.join(CACHE_DIR, f"fee_{code}.pkl")
     if os.path.exists(cache_file):
-        with open(cache_file, "rb") as f:
-            return pickle.load(f)
-    
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            pass
+
     url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js?v={int(time.time() * 1000)}"
     headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': f'http://fund.eastmoney.com/{code}.html'}
     try:
@@ -197,9 +209,12 @@ def get_fund_fee(code):
 def get_fund_holdings(code):
     cache_file = os.path.join(CACHE_DIR, f"holdings_{code}.pkl")
     if os.path.exists(cache_file):
-        with open(cache_file, "rb") as f:
-            return pickle.load(f)
-    
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            pass
+
     url = f"http://fund.eastmoney.com/DataCenter/Fund/JJZCHoldDetail.aspx?fundCode={code}"
     headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': f'http://fund.eastmoney.com/f10/jjcc_{code}.html'}
     try:
@@ -287,7 +302,6 @@ def analyze_holdings(holdings):
 
 # 步骤 10: 处理单支基金
 def process_fund(row, start_date, end_date, index_df, total_funds, idx):
-    # 修复：使用命名元组属性访问（row.code 而非 row['code']）
     code = row.code
     name = row.name
     fund_type = row.type
@@ -297,83 +311,92 @@ def process_fund(row, start_date, end_date, index_df, total_funds, idx):
     print(f"\n--- 正在处理基金 {idx}/{total_funds} ({', '.join(FUND_TYPE_FILTER)}): {name} ({code})...", flush=True)
     
     start_time = time.time()
-    net_df, latest_net_value, data_source = get_fund_net_values(code, start_date, end_date)
-    debug_info['数据源'] = data_source
-    debug_info['数据点数'] = len(net_df) if not net_df.empty else 0
+    try:
+        net_df, latest_net_value, data_source = get_fund_net_values(code, start_date, end_date)
+        debug_info['数据源'] = data_source
+        debug_info['数据点数'] = len(net_df) if not net_df.empty else 0
 
-    if net_df.empty or len(net_df) < MIN_DAYS:
-        reasons.append(f"数据不足（{len(net_df)}天 < {MIN_DAYS}天）")
-        debug_info['筛选状态'] = '未通过'
-        debug_info['失败原因'] = ', '.join(reasons)
+        if net_df.empty or len(net_df) < MIN_DAYS:
+            reasons.append(f"数据不足（{len(net_df)}天 < {MIN_DAYS}天）")
+            debug_info['筛选状态'] = '未通过'
+            debug_info['失败原因'] = ', '.join(reasons)
+            debug_info['处理耗时'] = round(time.time() - start_time, 2)
+            print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
+            return None, debug_info
+
+        metrics = calculate_metrics(net_df, start_date, end_date, index_df)
+        if metrics is None:
+            reasons.append(f"数据不足（{len(net_df)}天 < {MIN_DAYS}天）")
+            debug_info['筛选状态'] = '未通过'
+            debug_info['失败原因'] = ', '.join(reasons)
+            debug_info['处理耗时'] = round(time.time() - start_time, 2)
+            print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
+            return None, debug_info
+
+        fee = get_fund_fee(code)
+        realtime_estimate = get_fund_realtime_estimate(code)
+        holdings = get_fund_holdings(code)
+        industry_df, concentration = analyze_holdings(holdings) if holdings else (pd.DataFrame(), 0)
+
+        is_passed = (metrics['annual_return'] >= MIN_RETURN and
+                     metrics['volatility'] <= MAX_VOLATILITY and
+                     metrics['sharpe'] >= MIN_SHARPE and
+                     fee <= MAX_FEE)
+
+        debug_info.update({
+            '年化收益率 (%)': metrics['annual_return'],
+            '年化波动率 (%)': metrics['volatility'],
+            '夏普比率': metrics['sharpe'],
+            '贝塔系数': metrics['beta'],
+            '最大回撤 (%)': metrics['max_drawdown'],
+            '管理费 (%)': round(fee, 2),
+            '处理耗时': round(time.time() - start_time, 2)
+        })
+
+        if not is_passed:
+            if metrics['annual_return'] < MIN_RETURN:
+                reasons.append(f"年化收益率 ({metrics['annual_return']}%) < {MIN_RETURN}%")
+            if metrics['volatility'] > MAX_VOLATILITY:
+                reasons.append(f"波动率 ({metrics['volatility']}%) > {MAX_VOLATILITY}%")
+            if metrics['sharpe'] < MIN_SHARPE:
+                reasons.append(f"夏普比率 ({metrics['sharpe']}) < {MIN_SHARPE}")
+            if fee > MAX_FEE:
+                reasons.append(f"管理费 ({fee}%) > {MAX_FEE}%")
+            debug_info['筛选状态'] = '未通过'
+            debug_info['失败原因'] = ' / '.join(reasons)
+            print(f"    × 未通过筛选。原因：{' / '.join(reasons)}", flush=True)
+            return None, debug_info
+
+        score = (0.6 * (metrics['annual_return'] / 20) + 0.3 * metrics['sharpe'] + 0.1 * (2 - fee))
+        debug_info['筛选状态'] = '通过'
+        debug_info['综合评分'] = round(score, 2)
+
+        result = {
+            '基金代码': code,
+            '基金名称': name,
+            '基金类型': fund_type,
+            '年化收益率 (%)': metrics['annual_return'],
+            '年化波动率 (%)': metrics['volatility'],
+            '夏普比率': metrics['sharpe'],
+            '贝塔系数': metrics['beta'],
+            '最大回撤 (%)': metrics['max_drawdown'],
+            '管理费 (%)': round(fee, 2),
+            '最新净值': latest_net_value,
+            '实时估值': round(realtime_estimate, 4) if realtime_estimate else 'N/A',
+            '综合评分': round(score, 2),
+            '行业分布': industry_df.to_dict('records') if not industry_df.empty else [],
+            '行业集中度 (%)': concentration
+        }
+        print(f"    √ 通过筛选，评分: {result['综合评分']:.2f}", flush=True)
+        return result, debug_info
+        
+    except Exception as e:
+        # 如果处理过程中发生任何未预料的异常，捕获并记录
+        debug_info['筛选状态'] = '异常'
+        debug_info['失败原因'] = f"未处理的异常: {type(e).__name__} - {e}"
         debug_info['处理耗时'] = round(time.time() - start_time, 2)
-        print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
+        print(f"    × 处理时发生未处理的异常: {e}", flush=True)
         return None, debug_info
-
-    metrics = calculate_metrics(net_df, start_date, end_date, index_df)
-    if metrics is None:
-        reasons.append(f"数据不足（{len(net_df)}天 < {MIN_DAYS}天）")
-        debug_info['筛选状态'] = '未通过'
-        debug_info['失败原因'] = ', '.join(reasons)
-        debug_info['处理耗时'] = round(time.time() - start_time, 2)
-        print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
-        return None, debug_info
-
-    fee = get_fund_fee(code)
-    realtime_estimate = get_fund_realtime_estimate(code)
-    holdings = get_fund_holdings(code)
-    industry_df, concentration = analyze_holdings(holdings) if holdings else (pd.DataFrame(), 0)
-
-    is_passed = (metrics['annual_return'] >= MIN_RETURN and
-                 metrics['volatility'] <= MAX_VOLATILITY and
-                 metrics['sharpe'] >= MIN_SHARPE and
-                 fee <= MAX_FEE)
-
-    debug_info.update({
-        '年化收益率 (%)': metrics['annual_return'],
-        '年化波动率 (%)': metrics['volatility'],
-        '夏普比率': metrics['sharpe'],
-        '贝塔系数': metrics['beta'],
-        '最大回撤 (%)': metrics['max_drawdown'],
-        '管理费 (%)': round(fee, 2),
-        '处理耗时': round(time.time() - start_time, 2)
-    })
-
-    if not is_passed:
-        if metrics['annual_return'] < MIN_RETURN:
-            reasons.append(f"年化收益率 ({metrics['annual_return']}%) < {MIN_RETURN}%")
-        if metrics['volatility'] > MAX_VOLATILITY:
-            reasons.append(f"波动率 ({metrics['volatility']}%) > {MAX_VOLATILITY}%")
-        if metrics['sharpe'] < MIN_SHARPE:
-            reasons.append(f"夏普比率 ({metrics['sharpe']}) < {MIN_SHARPE}")
-        if fee > MAX_FEE:
-            reasons.append(f"管理费 ({fee}%) > {MAX_FEE}%")
-        debug_info['筛选状态'] = '未通过'
-        debug_info['失败原因'] = ' / '.join(reasons)
-        print(f"    × 未通过筛选。原因：{' / '.join(reasons)}", flush=True)
-        return None, debug_info
-
-    score = (0.6 * (metrics['annual_return'] / 20) + 0.3 * metrics['sharpe'] + 0.1 * (2 - fee))
-    debug_info['筛选状态'] = '通过'
-    debug_info['综合评分'] = round(score, 2)
-
-    result = {
-        '基金代码': code,
-        '基金名称': name,
-        '基金类型': fund_type,
-        '年化收益率 (%)': metrics['annual_return'],
-        '年化波动率 (%)': metrics['volatility'],
-        '夏普比率': metrics['sharpe'],
-        '贝塔系数': metrics['beta'],
-        '最大回撤 (%)': metrics['max_drawdown'],
-        '管理费 (%)': round(fee, 2),
-        '最新净值': latest_net_value,
-        '实时估值': round(realtime_estimate, 4) if realtime_estimate else 'N/A',
-        '综合评分': round(score, 2),
-        '行业分布': industry_df.to_dict('records') if not industry_df.empty else [],
-        '行业集中度 (%)': concentration
-    }
-    print(f"    √ 通过筛选，评分: {result['综合评分']:.2f}", flush=True)
-    return result, debug_info
 
 # 主函数
 def main():
@@ -395,11 +418,11 @@ def main():
     index_code = '000300'  # 沪深300
     index_df = pd.DataFrame()
     try:
-        index_df, _ = get_net_values_from_pingzhongdata(index_code, start_date, end_date)
+        index_df, _, _ = get_fund_net_values(index_code, start_date, end_date)
         if index_df.empty:
             print(f"    × 无法获取市场指数 {index_code} 数据，尝试备用指数。", flush=True)
             index_code_fallback = '000001'  # 上证指数
-            index_df, _ = get_net_values_from_pingzhongdata(index_code_fallback, start_date, end_date)
+            index_df, _, _ = get_fund_net_values(index_code_fallback, start_date, end_date)
             if index_df.empty:
                 print(f"    × 无法获取市场指数 {index_code_fallback} 数据，贝塔系数将不可用。", flush=True)
     except Exception as e:
@@ -409,8 +432,10 @@ def main():
     results = []
     debug_data = []
     with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(process_fund, row, start_date, end_date, index_df, total_funds, idx)
-                   for idx, row in enumerate(funds_df.itertuples(index=False), 1)]
+        # 使用字典来映射 future 和原始基金信息
+        futures = {executor.submit(process_fund, row, start_date, end_date, index_df, total_funds, idx): (idx, row)
+                   for idx, row in enumerate(funds_df.itertuples(index=False), 1)}
+        
         for future in tqdm(futures, desc="处理基金", total=total_funds):
             try:
                 result, debug_info = future.result()
@@ -418,7 +443,16 @@ def main():
                 if result:
                     results.append(result)
             except Exception as e:
-                print(f"    × 处理基金时发生异常: {e}", flush=True)
+                idx, row = futures[future]
+                debug_info = {
+                    '基金代码': row.code,
+                    '基金名称': row.name,
+                    '基金类型': row.type,
+                    '筛选状态': '异常',
+                    '失败原因': f"处理时发生异常: {type(e).__name__} - {e}"
+                }
+                debug_data.append(debug_info)
+                print(f"    × 处理基金 {row.name} ({row.code}) 时发生异常: {e}", flush=True)
 
     # 保存结果
     if results:

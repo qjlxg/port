@@ -32,7 +32,7 @@ jobs:
         if [ -f requirements.txt ]; then
           pip install -r requirements.txt
         else
-          # 确保安装 playwright 而不是 selenium
+          python -m pip install --upgrade pip
           pip install requests pandas numpy urllib3 beautifulsoup4 tqdm efinance playwright
         fi
         # 使用 python -m 运行 playwright 模块以避免 "command not found"

@@ -34,33 +34,31 @@ retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503,
 session.mount('http://', HTTPAdapter(max_retries=retries))
 session.mount('https://', HTTPAdapter(max_retries=retries))
 
-# 随机 User-Agent
+# 随机 User-Agent 和 Headers
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Safari/605.1.15',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0'
 ]
 
-# 申万行业分类数据（扩展版，添加更多股票以提高准确性）
+# 扩展的申万行业分类数据（进一步扩展）
 SW_INDUSTRY_MAPPING = {
     '600519': '食品饮料', '000858': '食品饮料', '002475': '家用电器', '002415': '家用电器',
     '300750': '计算机', '300059': '传媒', '002460': '汽车', '600036': '金融',
     '600276': '医药生物', '600030': '金融',
-    # 扩展：金融
     '000001': '金融', '600000': '金融', '601318': '金融', '601166': '金融',
-    # 扩展：家用电器
     '000333': '家用电器', '000651': '家用电器', '600690': '家用电器',
-    # 扩展：食品饮料
     '002304': '食品饮料', '000568': '食品饮料', '600809': '食品饮料', '603288': '食品饮料',
-    # 扩展：医药生物
-    '300760': '医药生物',
-    # 扩展：农林牧渔
-    '002714': '农林牧渔',
-    # 扩展：电力设备
-    '601012': '电力设备', '300274': '电力设备',
-    # 扩展：汽车
-    '000858': '食品饮料', '002460': '汽车',
-    # 可以继续添加更多
+    '300760': '医药生物', '002714': '农林牧渔', '601012': '电力设备', '300274': '电力设备',
+    '601688': '金融', '600837': '金融', '601398': '金融', '601288': '金融',
+    '002241': '计算机', '300033': '计算机', '002594': '汽车', '601633': '汽车',
+    '603259': '医药生物', '300122': '医药生物', '600196': '医药生物',
+    '000423': '医药生物', '002007': '医药生物', '600085': '医药生物',
+    '600660': '汽车', '002920': '计算机', '300628': '计算机',
+    '600893': '电力设备', '300014': '电力设备', '601985': '电力设备',
+    '002027': '传媒', '300027': '传媒', '002739': '传媒',
+    '000725': '电子', '300223': '电子', '600584': '电子',
+    '600887': '食品饮料', '603888': '食品饮料'
 }
 
 # 数据缓存目录
@@ -78,7 +76,12 @@ def get_all_funds_from_eastmoney():
 
     print(">>> 步骤1: 正在动态获取全市场基金列表...", flush=True)
     url = "http://fund.eastmoney.com/js/fundcode_search.js"
-    headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': 'http://fund.eastmoney.com/'}
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': 'http://fund.eastmoney.com/',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Connection': 'keep-alive'
+    }
     try:
         response = session.get(url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
@@ -123,7 +126,12 @@ def get_fund_net_values(code, start_date, end_date):
 
 def get_net_values_from_pingzhongdata(code, start_date, end_date):
     url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js?v={int(time.time() * 1000)}"
-    headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': f'http://fund.eastmoney.com/{code}.html'}
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'http://fund.eastmoney.com/{code}.html',
+        'Accept': 'text/javascript, application/javascript, */*',
+        'Connection': 'keep-alive'
+    }
     try:
         response = session.get(url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
@@ -143,7 +151,12 @@ def get_net_values_from_pingzhongdata(code, start_date, end_date):
 
 def get_net_values_from_lsjz(code, start_date, end_date):
     url = f"http://fund.eastmoney.com/f10/lsjz?fundCode={code}&pageIndex=1&pageSize=50000"
-    headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': f'http://fund.eastmoney.com/f10/fjcc_{code}.html'}
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'http://fund.eastmoney.com/f10/fjcc_{code}.html',
+        'Accept': 'application/json, text/plain, */*',
+        'Connection': 'keep-alive'
+    }
     try:
         response = session.get(url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
@@ -172,7 +185,12 @@ def get_fund_realtime_estimate(code):
             return pickle.load(f)
     
     url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={int(time.time() * 1000)}"
-    headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': f'http://fund.eastmoney.com/{code}.html'}
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'http://fund.eastmoney.com/{code}.html',
+        'Accept': 'application/json, text/javascript, */*',
+        'Connection': 'keep-alive'
+    }
     try:
         response = session.get(url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
@@ -196,7 +214,12 @@ def get_fund_fee(code):
             return pickle.load(f)
     
     url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js?v={int(time.time() * 1000)}"
-    headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': f'http://fund.eastmoney.com/{code}.html'}
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'http://fund.eastmoney.com/{code}.html',
+        'Accept': 'text/javascript, application/javascript, */*',
+        'Connection': 'keep-alive'
+    }
     try:
         response = session.get(url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
@@ -208,49 +231,105 @@ def get_fund_fee(code):
     except requests.exceptions.RequestException:
         return 1.5
 
-# 步骤 5: 获取基金最新持仓（修复版）
+# 步骤 5: 获取基金最新持仓（进一步修复）
 def get_fund_holdings(code):
     cache_file = os.path.join(CACHE_DIR, f"holdings_{code}.pkl")
     if os.path.exists(cache_file):
         with open(cache_file, "rb") as f:
-            return pickle.load(f)
+            holdings = pickle.load(f)
+        print(f"    调试: 从缓存加载 {code} 持仓，{len(holdings)} 条记录。", flush=True)
+        return holdings
     
-    # 优先使用备用接口
+    # 尝试多个接口
     urls = [
-        f"http://fundf10.eastmoney.com/jjcc_{code}.html",  # 备用接口
-        f"http://fund.eastmoney.com/DataCenter/Fund/JJZCHoldDetail.aspx?fundCode={code}"  # 原接口
+        f"http://fundf10.eastmoney.com/ccmx_{code}.html",  # 新接口：十大重仓股
+        f"http://fund.eastmoney.com/pingzhongdata/{code}.js",  # JSON 数据
+        f"http://fund.eastmoney.com/{code}.html"  # 基金主页
     ]
-    headers = {'User-Agent': random.choice(USER_AGENTS), 'Referer': f'http://fund.eastmoney.com/f10/jjcc_{code}.html'}
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'http://fund.eastmoney.com/{code}.html',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Connection': 'keep-alive'
+    }
+    
     for url in urls:
         try:
+            time.sleep(random.uniform(0.1, 0.5))  # 随机延时防反爬
             response = session.get(url, headers=headers, timeout=TIMEOUT)
             response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
+            
             holdings = []
-            # 尝试多个表格类名
-            stock_table = (soup.find('table', {'class': 'w782 comm tzxq'}) or 
-                           soup.find('table', {'class': 'm-table'}) or 
-                           soup.find('table', class_=lambda x: x and 'hold' in str(x).lower()))
-            if stock_table:
-                for row in stock_table.find_all('tr')[1:10]:  # 取前10行（十大持仓）
-                    cells = row.find_all('td')
-                    if len(cells) >= 4:
-                        holdings.append({
-                            'name': cells[1].text.strip(),  # 股票名称
-                            'code': cells[2].text.strip(),  # 股票代码
-                            'ratio': cells[3].text.strip()  # 持仓比例
-                        })
-                if holdings:
-                    with open(cache_file, "wb") as f:
-                        pickle.dump(holdings, f)
-                    return holdings
-            print(f"    调试: {url} 表格解析失败，尝试下一个接口。", flush=True)
+            if 'ccmx_' in url:  # 十大重仓股页面
+                soup = BeautifulSoup(response.text, 'html.parser')
+                stock_table = (soup.find('table', class_=lambda x: x and ('tzxq_table' in x or 'w782' in x or 'comm' in x)) or
+                              soup.find('table', class_=lambda x: x and 'hold' in x.lower()))
+                if stock_table:
+                    for row in stock_table.find_all('tr')[1:11]:  # 取前10行
+                        cells = row.find_all('td')
+                        if len(cells) >= 4:
+                            code_text = cells[2].text.strip()
+                            if code_text and code_text.isdigit() and len(code_text) == 6:
+                                holdings.append({
+                                    'name': cells[1].text.strip(),
+                                    'code': code_text,
+                                    'ratio': cells[3].text.strip().replace('%', '')
+                                })
+                    if holdings:
+                        print(f"    调试: {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
+                        with open(cache_file, "wb") as f:
+                            pickle.dump(holdings, f)
+                        return holdings
+                print(f"    调试: {url} 表格解析失败，尝试下一个接口。", flush=True)
+            
+            elif 'pingzhongdata' in url:  # JSON 数据
+                match = re.search(r'Data_holdStock\s*=\s*(\[.*?\]);', response.text, re.DOTALL)
+                if match:
+                    stock_data = json.loads(match.group(1))
+                    for item in stock_data[:10]:
+                        code = item.get('stockCode', '')
+                        if code and code.isdigit() and len(code) == 6:
+                            holdings.append({
+                                'name': item.get('stockName', '未知'),
+                                'code': code,
+                                'ratio': str(item.get('holdPercent', 0))
+                            })
+                    if holdings:
+                        print(f"    调试: {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
+                        with open(cache_file, "wb") as f:
+                            pickle.dump(holdings, f)
+                        return holdings
+                print(f"    调试: {url} JSON 解析失败，尝试下一个接口。", flush=True)
+            
+            elif f'/{code}.html' in url:  # 基金主页
+                soup = BeautifulSoup(response.text, 'html.parser')
+                stock_table = soup.find('table', class_=lambda x: x and 'hold' in x.lower())
+                if stock_table:
+                    for row in stock_table.find_all('tr')[1:11]:
+                        cells = row.find_all('td')
+                        if len(cells) >= 4:
+                            code_text = cells[2].text.strip()
+                            if code_text and code_text.isdigit() and len(code_text) == 6:
+                                holdings.append({
+                                    'name': cells[1].text.strip(),
+                                    'code': code_text,
+                                    'ratio': cells[3].text.strip().replace('%', '')
+                                })
+                    if holdings:
+                        print(f"    调试: {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
+                        with open(cache_file, "wb") as f:
+                            pickle.dump(holdings, f)
+                        return holdings
+                print(f"    调试: {url} 表格解析失败，尝试下一个接口。", flush=True)
+        
         except requests.exceptions.RequestException as e:
             print(f"    调试: {url} 请求失败: {e}", flush=True)
             continue
         except Exception as e:
             print(f"    调试: {url} 解析异常: {e}", flush=True)
             continue
+    
+    print(f"    调试: {code} 所有接口均失败，无持仓数据。", flush=True)
     return []
 
 # 步骤 6: 计算贝塔系数
@@ -305,8 +384,11 @@ def analyze_holdings(holdings):
     industry_ratios = {}
     for holding in holdings:
         stock_code = holding.get('code', 'N/A')
-        ratio_str = holding.get('ratio', '0%').replace('%', '')
-        ratio = float(ratio_str) if ratio_str else 0
+        ratio_str = holding.get('ratio', '0')
+        try:
+            ratio = float(ratio_str) if ratio_str else 0
+        except ValueError:
+            ratio = 0
         industry = SW_INDUSTRY_MAPPING.get(stock_code, '其他')
         industry_ratios[industry] = industry_ratios.get(industry, 0) + ratio
     industry_df = pd.DataFrame(list(industry_ratios.items()), columns=['行业', '占比 (%)'])

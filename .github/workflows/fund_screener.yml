@@ -32,9 +32,10 @@ jobs:
         if [ -f requirements.txt ]; then
           pip install -r requirements.txt
         else
-          pip install playwright
-          playwright install
+          
+          
           pip install requests pandas numpy urllib3 beautifulsoup4 tqdm efinance playwright
+          python -m playwright install chromium
         fi
 
 

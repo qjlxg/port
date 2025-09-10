@@ -32,9 +32,10 @@ jobs:
         if [ -f requirements.txt ]; then
           pip install -r requirements.txt
         else
-          pip install requests pandas numpy urllib3 beautifulsoup4 tqdm
+          pip install requests pandas numpy urllib3 beautifulsoup4 tqdm efinance
+     
         fi
-      # 如果有 requirements.txt 则使用，否则直接安装依赖
+    
 
     - name: Cache fund data
       uses: actions/cache@v4

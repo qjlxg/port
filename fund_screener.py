@@ -73,7 +73,6 @@ def get_all_funds_from_eastmoney():
             fund_data = json.loads(match.group(1))
             df = pd.DataFrame(fund_data, columns=['code', 'pinyin', 'name', 'type', 'pinyin_full'])
             df = df[['code', 'name', 'type']].drop_duplicates(subset=['code'])
-            # 提前筛选基金类型
             df = df[df['type'].isin(FUND_TYPE_FILTER)].copy()
             print(f"    √ 获取到 {len(df)} 只{', '.join(FUND_TYPE_FILTER)}基金。", flush=True)
             with open(cache_file, "wb") as f:
@@ -94,14 +93,12 @@ def get_fund_net_values(code, start_date, end_date):
         if not net_df.empty and len(net_df) >= MIN_DAYS:
             return net_df, latest_value, 'cache'
 
-    # 主接口
     df, latest_value = get_net_values_from_pingzhongdata(code, start_date, end_date)
     if not df.empty and len(df) >= MIN_DAYS:
         with open(cache_file, "wb") as f:
             pickle.dump((df, latest_value), f)
         return df, latest_value, 'pingzhongdata'
 
-    # 备用接口
     df, latest_value = get_net_values_from_lsjz(code, start_date, end_date)
     if not df.empty and len(df) >= MIN_DAYS:
         with open(cache_file, "wb") as f:
@@ -290,9 +287,10 @@ def analyze_holdings(holdings):
 
 # 步骤 10: 处理单支基金
 def process_fund(row, start_date, end_date, index_df, total_funds, idx):
-    code = row['code']
-    name = row['name']
-    fund_type = row['type']
+    # 修复：使用命名元组属性访问（row.code 而非 row['code']）
+    code = row.code
+    name = row.name
+    fund_type = row.type
     reasons = []
     debug_info = {'基金代码': code, '基金名称': name, '基金类型': fund_type}
 
@@ -414,10 +412,13 @@ def main():
         futures = [executor.submit(process_fund, row, start_date, end_date, index_df, total_funds, idx)
                    for idx, row in enumerate(funds_df.itertuples(index=False), 1)]
         for future in tqdm(futures, desc="处理基金", total=total_funds):
-            result, debug_info = future.result()
-            debug_data.append(debug_info)
-            if result:
-                results.append(result)
+            try:
+                result, debug_info = future.result()
+                debug_data.append(debug_info)
+                if result:
+                    results.append(result)
+            except Exception as e:
+                print(f"    × 处理基金时发生异常: {e}", flush=True)
 
     # 保存结果
     if results:

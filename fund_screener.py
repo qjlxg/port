@@ -404,29 +404,8 @@ def get_fund_holdings(code):
             
             holdings = []
             
-            if 'ccmx_' in url:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                stock_table = (soup.find('table', class_=lambda x: x and 'tzxq_table' in x or 'w782' in x or 'comm' in x) or
-                               soup.find('table', class_=lambda x: x and 'hold' in x.lower()))
-                if stock_table:
-                    for row in stock_table.find_all('tr')[1:11]:
-                        cells = row.find_all('td')
-                        if len(cells) >= 4:
-                            code_text = cells[2].text.strip()
-                            if code_text and code_text.isdigit() and len(code_text) == 6:
-                                holdings.append({
-                                    'name': cells[1].text.strip(),
-                                    'code': code_text,
-                                    'ratio': cells[3].text.strip().replace('%', '')
-                                })
-                    if holdings:
-                        print(f"    调试: {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
-                        with open(cache_file, "wb") as f:
-                            pickle.dump(holdings, f)
-                        return holdings
-                print(f"    调试: {url} 表格解析失败，尝试下一个接口。", flush=True)
-            
-            elif 'pingzhongdata' in url:
+            # 优先尝试 JSON 数据解析
+            if 'pingzhongdata' in url:
                 match = re.search(r'Data_holdStock\s*=\s*(\[.*?\]);', response.text, re.DOTALL)
                 if match:
                     stock_data = json.loads(match.group(1))
@@ -439,15 +418,26 @@ def get_fund_holdings(code):
                                 'ratio': str(item.get('holdPercent', 0))
                             })
                     if holdings:
-                        print(f"    调试: {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
+                        print(f"    调试: 从 {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
                         with open(cache_file, "wb") as f:
                             pickle.dump(holdings, f)
                         return holdings
                 print(f"    调试: {url} JSON 解析失败，尝试下一个接口。", flush=True)
             
-            elif f'/{code}.html' in url:
+            # 如果是 HTML 页面，进行表格解析
+            elif 'html' in url:
                 soup = BeautifulSoup(response.text, 'html.parser')
-                stock_table = soup.find('table', class_=lambda x: x and 'hold' in x.lower())
+                
+                # 方法1: 通过表格的class属性查找
+                stock_table = (soup.find('table', class_=lambda x: x and ('tzxq_table' in x or 'w782' in x or 'comm' in x)) or
+                               soup.find('table', class_=lambda x: x and 'hold' in x.lower()))
+
+                # 方法2: 如果方法1失败，通过表格前方的文本内容查找
+                if not stock_table:
+                    header_tag = soup.find(lambda tag: tag.name in ['h2', 'div', 'p'] and '报告期末占基金资产净值比例排序的股票一览' in tag.get_text())
+                    if header_tag and header_tag.find_next_sibling('table'):
+                        stock_table = header_tag.find_next_sibling('table')
+
                 if stock_table:
                     for row in stock_table.find_all('tr')[1:11]:
                         cells = row.find_all('td')
@@ -460,12 +450,12 @@ def get_fund_holdings(code):
                                     'ratio': cells[3].text.strip().replace('%', '')
                                 })
                     if holdings:
-                        print(f"    调试: {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
+                        print(f"    调试: 从 {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
                         with open(cache_file, "wb") as f:
                             pickle.dump(holdings, f)
                         return holdings
-                print(f"    调试: {url} 表格解析失败，尝试下一个接口。", flush=True)
-        
+                print(f"    调试: {url} 未找到持仓表格。", flush=True)
+
         except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError) as e:
             print(f"    调试: {url} 请求或解析失败: {e}", flush=True)
             continue

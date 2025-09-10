@@ -15,6 +15,8 @@ import os
 import pickle
 import warnings
 import traceback
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 
 # 忽略警告
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -274,31 +276,48 @@ def get_fund_holdings(code):
             print(f"    调试: 从缓存加载 {code} 持仓，{len(holdings)} 条记录。", flush=True)
             return holdings
         except Exception:
-            pass
+            print(f"    调试: 缓存文件 {cache_file} 损坏，将重新获取。", flush=True)
 
-    # 新增的 API 接口，用于获取十大重仓股数据
-    api_url = f"http://fund.eastmoney.com/Data_holdStock.html?fundCode={code}&pageIndex=1&pageSize=10"
     headers = {
         'User-Agent': random.choice(USER_AGENTS),
         'Referer': f'http://fundf10.eastmoney.com/ccmx_{code}.html',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept': 'application/json, text/javascript, */*',
         'Connection': 'keep-alive'
     }
 
+    # 尝试 JSON API
+    json_api_url = f"https://fund.eastmoney.com/Data/FundStockPosition.aspx?code={code}&rt={int(time.time() * 1000)}"
+    try:
+        response = session.get(json_api_url, headers=headers, timeout=TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+        holdings = []
+        if data and 'data' in data:
+            for item in data['data'][:10]:  # 取前10条
+                holdings.append({
+                    'name': item.get('stock_name', 'N/A'),
+                    'code': item.get('stock_code', 'N/A'),
+                    'ratio': item.get('ratio', '0').replace('%', '')
+                })
+            if holdings:
+                print(f"    调试: 从 JSON API {json_api_url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
+                with open(cache_file, "wb") as f:
+                    pickle.dump(holdings, f)
+                return holdings
+        print(f"    调试: JSON API {json_api_url} 未返回有效数据。", flush=True)
+    except Exception as e:
+        print(f"    调试: JSON API 请求或解析失败: {e}", flush=True)
+
+    # 回退到 HTML API
+    html_api_url = f"http://fund.eastmoney.com/Data_holdStock.html?fundCode={code}&pageIndex=1&pageSize=10"
     try:
         time.sleep(random.uniform(0.1, 0.5))
-        response = session.get(api_url, headers=headers, timeout=TIMEOUT)
+        response = session.get(html_api_url, headers=headers, timeout=TIMEOUT)
         response.raise_for_status()
-        
-        holdings = []
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 寻找包含持仓数据的表格，增加多个可能的class名称来提高健壮性
-        stock_table = (soup.find('table', class_=lambda x: x and 'tzxq_table' in x or 'w782' in x or 'comm' in x) or
-                       soup.find('table', class_=lambda x: x and 'hold' in x.lower()))
-
+        stock_table = soup.find('table', class_=lambda x: x and ('tzxq_table' in x or 'w782' in x or 'comm' in x or 'hold' in x.lower()))
         if stock_table:
-            # 遍历表格的行，从第二行开始（忽略表头）
+            holdings = []
             for row in stock_table.find_all('tr')[1:11]:
                 cells = row.find_all('td')
                 if len(cells) >= 4:
@@ -310,19 +329,49 @@ def get_fund_holdings(code):
                             'ratio': cells[3].text.strip().replace('%', '')
                         })
             if holdings:
-                print(f"    调试: 从 API 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
+                print(f"    调试: 从 HTML API {html_api_url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
                 with open(cache_file, "wb") as f:
                     pickle.dump(holdings, f)
                 return holdings
-        
-        print(f"    调试: 从 {api_url} 获取持仓数据失败。", flush=True)
-
-    except (requests.exceptions.RequestException, ValueError) as e:
-        print(f"    调试: API 请求或解析失败: {e}", flush=True)
+        print(f"    调试: HTML API {html_api_url} 未找到表格数据。", flush=True)
     except Exception as e:
-        print(f"    调试: API 解析异常: {e}", flush=True)
-        traceback.print_exc()
+        print(f"    调试: HTML API 请求或解析失败: {e}", flush=True)
 
+    # 回退到 Selenium
+    print(f"    调试: 尝试使用 Selenium 获取 {code} 持仓数据。", flush=True)
+    url = f"http://fundf10.eastmoney.com/ccmx_{code}.html"
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument(f"user-agent={random.choice(USER_AGENTS)}")
+    try:
+        driver = webdriver.Chrome(options=options)
+        driver.get(url)
+        time.sleep(3)  # 等待 JavaScript 加载
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        stock_table = soup.find('table', class_=lambda x: x and ('tzxq_table' in x or 'w782' in x or 'comm' in x or 'hold' in x.lower()))
+        holdings = []
+        if stock_table:
+            for row in stock_table.find_all('tr')[1:11]:
+                cells = row.find_all('td')
+                if len(cells) >= 4:
+                    code_text = cells[2].text.strip()
+                    if code_text and code_text.isdigit() and len(code_text) == 6:
+                        holdings.append({
+                            'name': cells[1].text.strip(),
+                            'code': code_text,
+                            'ratio': cells[3].text.strip().replace('%', '')
+                        })
+            if holdings:
+                print(f"    调试: 从 Selenium 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
+                with open(cache_file, "wb") as f:
+                    pickle.dump(holdings, f)
+                return holdings
+        print(f"    调试: Selenium {url} 未找到表格数据。", flush=True)
+    except Exception as e:
+        print(f"    调试: Selenium 请求或解析失败: {e}", flush=True)
+    finally:
+        driver.quit()
+    
     print(f"    调试: {code} 所有接口均失败，无持仓数据。", flush=True)
     return []
 

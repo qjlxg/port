@@ -111,6 +111,41 @@ def get_fund_net_values(code, start_date, end_date):
         if not net_df.empty and len(net_df) >= MIN_DAYS:
             return net_df, latest_value, 'cache'
 
+    # 新增的更可靠的接口
+    url = 'https://api.fund.eastmoney.com/f10/FundNetWorthForMonth?fundCode={}&startDate={}&endDate={}&t={}'.format(
+        code, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), int(time.time() * 1000)
+    )
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'http://fundf10.eastmoney.com/jdzf_{code}.html',
+        'Connection': 'keep-alive',
+        'Accept': 'application/json, text/plain, */*',
+    }
+    try:
+    	response = session.get(url, headers=headers, timeout=TIMEOUT)
+    	response.raise_for_status()
+    	json_data = response.json()
+    	data = json_data.get('Data', {})
+    	if data and data.get('fundNetWorthForMonth'):
+    		fund_data = data['fundNetWorthForMonth']
+    		df = pd.DataFrame(fund_data)
+    		df['date'] = pd.to_datetime(df['JZRQ'])
+    		df['value'] = pd.to_numeric(df['DWJZ'])
+    		df = df[['date', 'value']].set_index('date').sort_index()
+    		df = df.loc[start_date:end_date].copy()
+    		latest_value = pd.to_numeric(data['fundDetails'].get('DWJZ'))
+    		
+    		if not df.empty and len(df) >= MIN_DAYS:
+    			with open(cache_file, "wb") as f:
+    				pickle.dump((df, latest_value), f)
+    			return df, latest_value, 'fetch'
+    		else:
+    			print(f"    调试: {code} 新接口数据点不足 ({len(df)}天 < {MIN_DAYS}天)。", flush=True)
+    			return pd.DataFrame(), None, 'fail'
+    except Exception as e:
+    	print(f"    调试: 新接口 {url} 请求或解析失败: {e}", flush=True)
+
+    # 原始的 pingzhongdata 接口作为备用
     def get_net_values_from_pingzhongdata(code, start_date, end_date):
         url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js?v={int(time.time() * 1000)}"
         headers = {

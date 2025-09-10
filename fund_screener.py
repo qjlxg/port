@@ -15,7 +15,6 @@ import os
 import pickle
 import warnings
 import traceback
-import sys
 
 # 忽略警告
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -40,9 +39,7 @@ session.mount('https://', HTTPAdapter(max_retries=retries))
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Safari/605.1.15',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
-    'EMProj/1.0 FundTrade/6.3.5 (iPhone; iOS 16.5; Scale/3.00)',
-    'Eastmoney/6.3.5 (iPhone; iOS 16.5; Scale/3.00)'
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0'
 ]
 
 # 扩展的申万行业分类数据
@@ -69,59 +66,6 @@ SW_INDUSTRY_MAPPING = {
 CACHE_DIR = "fund_data_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-def _fetch_with_get(url: str, referer: str) -> requests.Response | None:
-    """
-    通用网络GET请求函数，带有重试机制和随机User-Agent。
-    """
-    headers = {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Referer': referer,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Connection': 'keep-alive'
-    }
-    try:
-        response = session.get(url, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        return response
-    except requests.exceptions.RequestException as e:
-        print(f"    调试: GET 请求失败 {url}: {e}", file=sys.stderr, flush=True)
-        return None
-
-def _fetch_with_api(url: str, params: dict) -> dict | None:
-    """
-    通用API POST请求函数，用于东方财富手机端API。
-    """
-    headers = {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Host': 'fundmobapi.eastmoney.com',
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Origin': 'https://trade.1234567.com.cn',
-        'Referer': 'https://trade.1234567.com.cn/'
-    }
-    
-    # 基础参数
-    base_params = {
-        'deviceid': '123',
-        'plat': 'Iphone',
-        'version': '6.3.5',
-        'appVersion': '6.3.5',
-        'product': 'EFund',
-        'serverVersion': '6.3.5'
-    }
-    params.update(base_params)
-
-    try:
-        response = session.post(url, data=params, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        data = response.json()
-        if data.get('ErrCode') == 0:
-            return data.get('Datas') or data.get('Data') or data
-        print(f"    调试: API 请求失败 {url}, 错误码: {data.get('ErrCode')}", file=sys.stderr, flush=True)
-        return None
-    except requests.exceptions.RequestException as e:
-        print(f"    调试: API POST 请求失败 {url}: {e}", file=sys.stderr, flush=True)
-        return None
-
 def get_all_funds_from_eastmoney():
     cache_file = os.path.join(CACHE_DIR, "fund_list.pkl")
     if os.path.exists(cache_file):
@@ -134,41 +78,31 @@ def get_all_funds_from_eastmoney():
             print(f"    × 加载基金列表缓存失败: {e}，将重新获取。", flush=True)
 
     print(">>> 步骤1: 正在动态获取全市场基金列表...", flush=True)
-
-    # 优先尝试新的 API
-    api_url = "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNNetNewList"
-    params = {'fundType': '0'}  # 0代表所有类型
-    api_data = _fetch_with_api(api_url, params)
-    
-    if api_data and 'fundList' in api_data:
-        df = pd.DataFrame(api_data['fundList'])
-        df = df.rename(columns={'FCode': 'code', 'SName': 'name', 'FundType': 'type'})
-        df = df[['code', 'name', 'type']].drop_duplicates(subset=['code'])
-        df = df[df['type'].isin(FUND_TYPE_FILTER)].copy()
-        print(f"    √ 通过新 API 获取到 {len(df)} 只{', '.join(FUND_TYPE_FILTER)}基金。", flush=True)
-        with open(cache_file, "wb") as f:
-            pickle.dump(df, f)
-        return df
-
-    # API失败后，回退到原有网页爬取方法
     url = "http://fund.eastmoney.com/js/fundcode_search.js"
-    response = _fetch_with_get(url, 'http://fund.eastmoney.com/')
-    if not response:
-        print("    × 获取基金列表失败。", flush=True)
-        return pd.DataFrame()
-
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': 'http://fund.eastmoney.com/',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Connection': 'keep-alive'
+    }
     try:
-        match = re.search(r'var\s+r\s*=\s*(\[.*?\]);', response.text, re.DOTALL)
+        response = session.get(url, headers=headers, timeout=TIMEOUT)
+        response.raise_for_status()
+        content = response.text
+        match = re.search(r'var\s+r\s*=\s*(\[.*?\]);', content, re.DOTALL)
         if match:
             fund_data = json.loads(match.group(1))
             df = pd.DataFrame(fund_data, columns=['code', 'pinyin', 'name', 'type', 'pinyin_full'])
             df = df[['code', 'name', 'type']].drop_duplicates(subset=['code'])
             df = df[df['type'].isin(FUND_TYPE_FILTER)].copy()
-            print(f"    √ 通过原有爬取方法获取到 {len(df)} 只{', '.join(FUND_TYPE_FILTER)}基金。", flush=True)
+            print(f"    √ 获取到 {len(df)} 只{', '.join(FUND_TYPE_FILTER)}基金。", flush=True)
             with open(cache_file, "wb") as f:
                 pickle.dump(df, f)
             return df
         print("    × 未能解析基金列表数据。", flush=True)
+        return pd.DataFrame()
+    except requests.exceptions.RequestException as e:
+        print(f"    × 获取基金列表失败: {e}", flush=True)
         return pd.DataFrame()
     except Exception as e:
         print(f"    × 解析基金列表时发生异常: {e}", flush=True)
@@ -183,28 +117,8 @@ def get_fund_net_values(code, start_date, end_date):
             if not net_df.empty and len(net_df) >= MIN_DAYS:
                 return net_df, latest_value, 'cache'
         except Exception:
-            pass
+            pass  # 如果缓存文件损坏，继续尝试其他接口
 
-    # 优先尝试新的 API
-    api_url = "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList"
-    params = {'fundCode': code}
-    api_data = _fetch_with_api(api_url, params)
-    if api_data and 'netList' in api_data:
-        df = pd.DataFrame(api_data['netList']).rename(columns={'FSRQ': 'date', 'DWJZ': 'net_value'})
-        df['date'] = pd.to_datetime(df['date'])
-        df['net_value'] = pd.to_numeric(df['net_value'], errors='coerce')
-        df = df[(df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))]
-        df = df.sort_values('date').dropna(subset=['net_value']).reset_index(drop=True)
-        latest_value = df['net_value'].iloc[-1] if not df.empty else None
-        if not df.empty and len(df) >= MIN_DAYS:
-            try:
-                with open(cache_file, "wb") as f:
-                    pickle.dump((df, latest_value), f)
-            except Exception:
-                pass
-            return df, latest_value, 'api'
-    
-    # API失败后，回退到原有网页爬取方法
     df, latest_value = get_net_values_from_pingzhongdata(code, start_date, end_date)
     if not df.empty and len(df) >= MIN_DAYS:
         try:
@@ -227,11 +141,15 @@ def get_fund_net_values(code, start_date, end_date):
 
 def get_net_values_from_pingzhongdata(code, start_date, end_date):
     url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js?v={int(time.time() * 1000)}"
-    response = _fetch_with_get(url, f'http://fund.eastmoney.com/{code}.html')
-    if not response:
-        return pd.DataFrame(), None
-    
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'http://fund.eastmoney.com/{code}.html',
+        'Accept': 'text/javascript, application/javascript, */*',
+        'Connection': 'keep-alive'
+    }
     try:
+        response = session.get(url, headers=headers, timeout=TIMEOUT)
+        response.raise_for_status()
         net_worth_match = re.search(r'Data_netWorthTrend\s*=\s*(\[.*?\]);', response.text, re.DOTALL)
         if not net_worth_match:
             print(f"    调试: {url} 未找到净值数据。", flush=True)
@@ -251,11 +169,15 @@ def get_net_values_from_pingzhongdata(code, start_date, end_date):
 
 def get_net_values_from_lsjz(code, start_date, end_date):
     url = f"http://fund.eastmoney.com/f10/lsjz?fundCode={code}&pageIndex=1&pageSize=50000"
-    response = _fetch_with_get(url, f'http://fund.eastmoney.com/f10/fjcc_{code}.html')
-    if not response:
-        return pd.DataFrame(), None
-        
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'http://fund.eastmoney.com/f10/fjcc_{code}.html',
+        'Accept': 'application/json, text/plain, */*',
+        'Connection': 'keep-alive'
+    }
     try:
+        response = session.get(url, headers=headers, timeout=TIMEOUT)
+        response.raise_for_status()
         data_str_match = re.search(r'var\s+apidata=\{content:"(.*?)",', response.text, re.DOTALL)
         if not data_str_match:
             print(f"    调试: {url} 未找到历史净值数据。", flush=True)
@@ -285,27 +207,16 @@ def get_fund_realtime_estimate(code):
         except Exception:
             pass
     
-    # 优先尝试新的 API
-    api_url = "https://fundcomapi.tiantianfunds.com/mm/fundTrade/FundValuationDetail"
-    params = {'fundCode': code}
-    api_data = _fetch_with_api(api_url, params)
-    if api_data and 'Valuation' in api_data:
-        gsz = api_data['Valuation']
-        try:
-            gsz_float = float(gsz)
-            with open(cache_file, "wb") as f:
-                pickle.dump(gsz_float, f)
-            return gsz_float
-        except (ValueError, TypeError):
-            pass
-
-    # API失败后，回退到原有网页爬取方法
     url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={int(time.time() * 1000)}"
-    response = _fetch_with_get(url, f'http://fund.eastmoney.com/{code}.html')
-    if not response:
-        return None
-    
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'http://fund.eastmoney.com/{code}.html',
+        'Accept': 'application/json, text/javascript, */*',
+        'Connection': 'keep-alive'
+    }
     try:
+        response = session.get(url, headers=headers, timeout=TIMEOUT)
+        response.raise_for_status()
         match = re.search(r'jsonpgz\((.*)\)', response.text, re.DOTALL)
         if match:
             json_data = json.loads(match.group(1))
@@ -333,50 +244,26 @@ def get_fund_fee(code):
             pass
     
     url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js?v={int(time.time() * 1000)}"
-    response = _fetch_with_get(url, f'http://fund.eastmoney.com/{code}.html')
-    if not response:
-        return 1.5
-    
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'http://fund.eastmoney.com/{code}.html',
+        'Accept': 'text/javascript, application/javascript, */*',
+        'Connection': 'keep-alive'
+    }
     try:
+        response = session.get(url, headers=headers, timeout=TIMEOUT)
+        response.raise_for_status()
         fee_match = re.search(r'data_fundTribble\.ManagerFee=\'([\d.]+)\'', response.text)
         fee = float(fee_match.group(1)) if fee_match else 1.5
         with open(cache_file, "wb") as f:
             pickle.dump(fee, f)
         return fee
+    except requests.exceptions.RequestException:
+        print(f"    调试: 获取管理费 {code} 请求失败。", flush=True)
+        return 1.5
     except Exception as e:
         print(f"    调试: 获取管理费 {code} 解析异常: {e}", flush=True)
         return 1.5
-
-def get_fund_grade(code):
-    """
-    获取基金评级数据。
-    """
-    api_url = 'https://fundmobapi.eastmoney.com/FundMApi/FundGradeDetail.ashx'
-    params = {'fundCode': code}
-    api_data = _fetch_with_api(api_url, params)
-    
-    if api_data:
-        try:
-            grade_info = api_data.get('Datas')[0]
-            grade = grade_info.get('Grade')
-            grade_source = grade_info.get('OrgName')
-            grade_date = grade_info.get('CreateDate')
-            return {'grade': grade, 'source': grade_source, 'date': grade_date}
-        except (IndexError, KeyError):
-            return None
-    return None
-
-def get_fund_period_increase(code):
-    """
-    获取基金不同时间段涨幅数据。
-    """
-    api_url = 'https://fundmobapi.eastmoney.com/FundMNewApi/FundMNPeriodIncrease'
-    params = {'fundCode': code}
-    api_data = _fetch_with_api(api_url, params)
-    
-    if api_data:
-        return api_data
-    return None
 
 def get_fund_holdings(code):
     cache_file = os.path.join(CACHE_DIR, f"holdings_{code}.pkl")
@@ -388,82 +275,54 @@ def get_fund_holdings(code):
             return holdings
         except Exception:
             pass
-    
-    urls = [
-        f"http://fundf10.eastmoney.com/ccmx_{code}.html",  # 新接口：十大重仓股
-        f"http://fund.eastmoney.com/pingzhongdata/{code}.js",  # JSON 数据
-        f"http://fund.eastmoney.com/{code}.html"  # 基金主页
-    ]
-    
-    for url in urls:
-        try:
-            time.sleep(random.uniform(0.1, 0.5))
-            response = _fetch_with_get(url, f'http://fund.eastmoney.com/{code}.html')
-            if not response:
-                continue
-            
-            holdings = []
-            
-            # 优先尝试 JSON 数据解析
-            if 'pingzhongdata' in url:
-                match = re.search(r'Data_holdStock\s*=\s*(\[.*?\]);', response.text, re.DOTALL)
-                if match:
-                    stock_data = json.loads(match.group(1))
-                    for item in stock_data[:10]:
-                        code_val = item.get('stockCode', '')
-                        if code_val and code_val.isdigit() and len(code_val) == 6:
-                            holdings.append({
-                                'name': item.get('stockName', '未知'),
-                                'code': code_val,
-                                'ratio': str(item.get('holdPercent', 0))
-                            })
-                    if holdings:
-                        print(f"    调试: 从 {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
-                        with open(cache_file, "wb") as f:
-                            pickle.dump(holdings, f)
-                        return holdings
-                print(f"    调试: {url} JSON 解析失败，尝试下一个接口。", flush=True)
-            
-            # 如果是 HTML 页面，进行表格解析
-            elif 'html' in url:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                # 方法1: 通过表格的class属性查找
-                stock_table = (soup.find('table', class_=lambda x: x and ('tzxq_table' in x or 'w782' in x or 'comm' in x)) or
-                               soup.find('table', class_=lambda x: x and 'hold' in x.lower()))
 
-                # 方法2: 如果方法1失败，通过表格前方的文本内容查找
-                if not stock_table:
-                    header_tag = soup.find(lambda tag: tag.name in ['h2', 'div', 'p'] and '报告期末占基金资产净值比例排序的股票一览' in tag.get_text())
-                    if header_tag and header_tag.find_next_sibling('table'):
-                        stock_table = header_tag.find_next_sibling('table')
+    # 新增的 API 接口，用于获取十大重仓股数据
+    api_url = f"http://fund.eastmoney.com/Data_holdStock.html?fundCode={code}&pageIndex=1&pageSize=10"
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'http://fundf10.eastmoney.com/ccmx_{code}.html',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Connection': 'keep-alive'
+    }
 
-                if stock_table:
-                    for row in stock_table.find_all('tr')[1:11]:
-                        cells = row.find_all('td')
-                        if len(cells) >= 4:
-                            code_text = cells[2].text.strip()
-                            if code_text and code_text.isdigit() and len(code_text) == 6:
-                                holdings.append({
-                                    'name': cells[1].text.strip(),
-                                    'code': code_text,
-                                    'ratio': cells[3].text.strip().replace('%', '')
-                                })
-                    if holdings:
-                        print(f"    调试: 从 {url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
-                        with open(cache_file, "wb") as f:
-                            pickle.dump(holdings, f)
-                        return holdings
-                print(f"    调试: {url} 未找到持仓表格。", flush=True)
+    try:
+        time.sleep(random.uniform(0.1, 0.5))
+        response = session.get(api_url, headers=headers, timeout=TIMEOUT)
+        response.raise_for_status()
+        
+        holdings = []
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # 寻找包含持仓数据的表格，增加多个可能的class名称来提高健壮性
+        stock_table = (soup.find('table', class_=lambda x: x and 'tzxq_table' in x or 'w782' in x or 'comm' in x) or
+                       soup.find('table', class_=lambda x: x and 'hold' in x.lower()))
 
-        except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError) as e:
-            print(f"    调试: {url} 请求或解析失败: {e}", flush=True)
-            continue
-        except Exception as e:
-            print(f"    调试: {url} 解析异常: {e}", flush=True)
-            traceback.print_exc()
-            continue
-    
+        if stock_table:
+            # 遍历表格的行，从第二行开始（忽略表头）
+            for row in stock_table.find_all('tr')[1:11]:
+                cells = row.find_all('td')
+                if len(cells) >= 4:
+                    code_text = cells[2].text.strip()
+                    if code_text and code_text.isdigit() and len(code_text) == 6:
+                        holdings.append({
+                            'name': cells[1].text.strip(),
+                            'code': code_text,
+                            'ratio': cells[3].text.strip().replace('%', '')
+                        })
+            if holdings:
+                print(f"    调试: 从 API 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
+                with open(cache_file, "wb") as f:
+                    pickle.dump(holdings, f)
+                return holdings
+        
+        print(f"    调试: 从 {api_url} 获取持仓数据失败。", flush=True)
+
+    except (requests.exceptions.RequestException, ValueError) as e:
+        print(f"    调试: API 请求或解析失败: {e}", flush=True)
+    except Exception as e:
+        print(f"    调试: API 解析异常: {e}", flush=True)
+        traceback.print_exc()
+
     print(f"    调试: {code} 所有接口均失败，无持仓数据。", flush=True)
     return []
 

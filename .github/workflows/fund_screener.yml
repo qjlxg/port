@@ -2,55 +2,67 @@ name: Fund Screener Workflow
 
 on:
   push:
-    branches: [ main ] # 推送至 main 分支时触发
-    paths: # 仅在以下文件变更时触发
+    branches: [ main ]
+    paths:
       - 'fund_screener.py'
       - '.github/workflows/fund_screener.yml'
-  workflow_dispatch: # 允许手动触发
+  schedule:
+    - cron: '0 2 * * *' # 每天 UTC 时间 2:00（北京时间 10:00）运行
+  workflow_dispatch:
 
 jobs:
   run-screener:
-    runs-on: ubuntu-latest # 使用最新 Ubuntu 环境
-    timeout-minutes: 358 # 设置最大运行时间为 60 分钟
+    runs-on: ubuntu-latest
+    timeout-minutes: 30 # 调整为 30 分钟，与优化版代码匹配
 
     steps:
-    - name: Checkout repository # 获取仓库代码
+    - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set up Python # 设置 Python 环境
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10' # Python 3.10
-        # 移除 cache: 'pip'，避免缺少 requirements.txt/pyproject.toml 的错误
+        python-version: '3.10'
+        cache: 'pip' # 缓存 pip 依赖
 
-    - name: Install dependencies # 安装所需库
+    - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests pandas numpy lxml urllib3 aiohttp beautifulsoup4
+        pip install requests pandas numpy urllib3 beautifulsoup4 tqdm
 
-        
-    - name: Create cache directory # 创建缓存目录
-      run: mkdir -p cache
+    - name: Cache fund data
+      uses: actions/cache@v4
+      with:
+        path: fund_data_cache
+        key: fund-data-cache-${{ github.run_id }}
+        restore-keys: |
+          fund-data-cache-
 
-    - name: Run fund screener script # 运行筛选脚本
+    - name: Create cache directory
+      run: mkdir -p fund_data_cache
+
+    - name: Run fund screener script
       run: |
         python fund_screener.py | tee screener_output.log
-      continue-on-error: true # 允许脚本失败继续运行以保存日志
+      continue-on-error: true
 
-    - name: Commit and push results # 提交结果文件和缓存
+    - name: Commit and push results
       run: |
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        git add recommended_cn_funds.csv debug_fund_metrics.csv cache/ screener_output.log debug_fund_metrics.csv
-        git commit -m "Automated: Update qualified funds list, debug info, cache, and logs" || echo "No changes to commit"
+        git add recommended_cn_funds.csv debug_fund_metrics.csv screener_output.log
+        git commit -m "Automated: Update qualified funds list, debug info, and logs" || echo "No changes to commit"
         git push
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 确保推送权限
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Archive logs # 存档日志文件
-      if: always() # 无论成功或失败都存档
+    - name: Archive artifacts
+      if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: screener-logs
-        path: screener_output.log
-        retention-days: 7 # 保留 7 天
+        name: screener-artifacts
+        path: |
+          screener_output.log
+          recommended_cn_funds.csv
+          debug_fund_metrics.csv
+        retention-days: 7

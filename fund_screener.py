@@ -21,10 +21,10 @@ from playwright.sync_api import sync_playwright
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # 筛选条件
-MIN_RETURN = 3.0  # 年化收益率 >= 3%
-MAX_VOLATILITY = 25.0  # 波动率 <= 25%
-MIN_SHARPE = 0.2  # 夏普比率 >= 0.2
-MAX_FEE = 2.5  # 管理费 <= 2.5%
+MIN_RETURN = 3.0  # 年化收益率 ≥ 3%
+MAX_VOLATILITY = 25.0  # 波动率 ≤ 25%
+MIN_SHARPE = 0.2  # 夏普比率 ≥ 0.2
+MAX_FEE = 2.5  # 管理费 ≤ 2.5%
 RISK_FREE_RATE = 3.0  # 无风险利率 3%
 MIN_DAYS = 100  # 最低数据天数
 TIMEOUT = 10  # 网络请求超时时间（秒）
@@ -76,7 +76,7 @@ def get_all_funds_from_eastmoney():
             print(f"    √ 从缓存加载 {len(funds_df)} 只基金。", flush=True)
             return funds_df
         except Exception as e:
-            print(f"    × 加载基金列表缓存失败: {e}, 将重新获取。", flush=True)
+            print(f"    × 加载基金列表缓存失败: {e}，将重新获取。", flush=True)
 
     print(">>> 步骤1: 正在动态获取全市场基金列表...", flush=True)
     url = "http://fund.eastmoney.com/js/fundcode_search.js"
@@ -118,7 +118,7 @@ def get_fund_net_values(code, start_date, end_date):
             if not net_df.empty and len(net_df) >= MIN_DAYS:
                 return net_df, latest_value, 'cache'
         except Exception:
-            pass  # 如果缓存文件损坏,继续尝试其他接口
+            pass  # 如果缓存文件损坏，继续尝试其他接口
 
     df, latest_value = get_net_values_from_pingzhongdata(code, start_date, end_date)
     if not df.empty and len(df) >= MIN_DAYS:
@@ -272,10 +272,10 @@ def get_fund_holdings(code):
         try:
             with open(cache_file, "rb") as f:
                 holdings = pickle.load(f)
-            print(f"    调试: 从缓存加载 {code} 持仓, {len(holdings)} 条记录。", flush=True)
+            print(f"    调试: 从缓存加载 {code} 持仓，{len(holdings)} 条记录。", flush=True)
             return holdings
         except Exception:
-            print(f"    调试: 缓存文件 {cache_file} 损坏, 将重新获取。", flush=True)
+            print(f"    调试: 缓存文件 {cache_file} 损坏，将重新获取。", flush=True)
 
     headers = {
         'User-Agent': random.choice(USER_AGENTS),
@@ -299,7 +299,7 @@ def get_fund_holdings(code):
                     'ratio': item.get('ratio', '0').replace('%', '')
                 })
             if holdings:
-                print(f"    调试: 从 JSON API {json_api_url} 获取 {code} 持仓成功, {len(holdings)} 条记录。", flush=True)
+                print(f"    调试: 从 JSON API {json_api_url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
                 with open(cache_file, "wb") as f:
                     pickle.dump(holdings, f)
                 return holdings
@@ -328,7 +328,7 @@ def get_fund_holdings(code):
                             'ratio': cells[3].text.strip().replace('%', '')
                         })
             if holdings:
-                print(f"    调试: 从 HTML API {html_api_url} 获取 {code} 持仓成功, {len(holdings)} 条记录。", flush=True)
+                print(f"    调试: 从 HTML API {html_api_url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
                 with open(cache_file, "wb") as f:
                     pickle.dump(holdings, f)
                 return holdings
@@ -344,7 +344,8 @@ def get_fund_holdings(code):
             page = browser.new_page()
             url = f"http://fundf10.eastmoney.com/ccmx_{code}.html"
             page.goto(url)
-            page.wait_for_selector('table.w700')  # 等待表格加载完成
+            # 改进选择器并增加超时时间
+            page.wait_for_selector('div.boxitem table', timeout=60000)
             
             html_content = page.content()
             browser.close()
@@ -363,7 +364,7 @@ def get_fund_holdings(code):
                             'code': row['股票代码'],
                             'ratio': row['占净值比例']
                         })
-                    print(f"    调试: 从 Playwright 获取 {code} 持仓成功, {len(holdings)} 条记录。", flush=True)
+                    print(f"    调试: 从 Playwright 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
                     with open(cache_file, "wb") as f:
                         pickle.dump(holdings, f)
                     return holdings
@@ -372,7 +373,7 @@ def get_fund_holdings(code):
         print(f"    调试: Playwright 请求或解析失败: {e}", flush=True)
         traceback.print_exc()
 
-    print(f"    调试: {code} 所有接口均失败, 无持仓数据。", flush=True)
+    print(f"    调试: {code} 所有接口均失败，无持仓数据。", flush=True)
     return []
 
 def calculate_beta(fund_returns, market_returns):
@@ -454,20 +455,20 @@ def process_fund(row, start_date, end_date, index_df, total_funds, idx):
     debug_info['数据点数'] = len(net_df) if not net_df.empty else 0
 
     if net_df.empty or len(net_df) < MIN_DAYS:
-        reasons.append(f"数据不足({len(net_df)}天 < {MIN_DAYS}天)")
+        reasons.append(f"数据不足（{len(net_df)}天 < {MIN_DAYS}天）")
         debug_info['筛选状态'] = '未通过'
         debug_info['失败原因'] = ', '.join(reasons)
         debug_info['处理耗时'] = round(time.time() - start_time, 2)
-        print(f"    × 未通过筛选。原因: {', '.join(reasons)}", flush=True)
+        print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
         return None, debug_info
 
     metrics = calculate_metrics(net_df, start_date, end_date, index_df)
     if metrics is None:
-        reasons.append(f"数据不足({len(net_df)}天 < {MIN_DAYS}天)")
+        reasons.append(f"数据不足（{len(net_df)}天 < {MIN_DAYS}天）")
         debug_info['筛选状态'] = '未通过'
         debug_info['失败原因'] = ', '.join(reasons)
         debug_info['处理耗时'] = round(time.time() - start_time, 2)
-        print(f"    × 未通过筛选。原因: {' / '.join(reasons)}", flush=True)
+        print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
         return None, debug_info
 
     fee = get_fund_fee(code)
@@ -501,7 +502,7 @@ def process_fund(row, start_date, end_date, index_df, total_funds, idx):
             reasons.append(f"管理费 ({fee}%) > {MAX_FEE}%")
         debug_info['筛选状态'] = '未通过'
         debug_info['失败原因'] = ' / '.join(reasons)
-        print(f"    × 未通过筛选。原因: {' / '.join(reasons)}", flush=True)
+        print(f"    × 未通过筛选。原因：{' / '.join(reasons)}", flush=True)
         return None, debug_info
 
     score = (0.6 * (metrics['annual_return'] / 20) + 0.3 * metrics['sharpe'] + 0.1 * (2 - fee))
@@ -524,7 +525,7 @@ def process_fund(row, start_date, end_date, index_df, total_funds, idx):
         '行业分布': industry_df.to_dict('records') if not industry_df.empty else [],
         '行业集中度 (%)': concentration
     }
-    print(f"    √ 通过筛选, 评分: {result['综合评分']:.2f}", flush=True)
+    print(f"    √ 通过筛选，评分: {result['综合评分']:.2f}", flush=True)
     return result, debug_info
 
 def main():
@@ -535,7 +536,7 @@ def main():
 
     funds_df = get_all_funds_from_eastmoney()
     if funds_df.empty:
-        print("无法获取基金列表, 程序退出。", flush=True)
+        print("无法获取基金列表，程序退出。", flush=True)
         return
 
     total_funds = len(funds_df)
@@ -546,13 +547,13 @@ def main():
     try:
         index_df, _, _ = get_fund_net_values(index_code, start_date, end_date)
         if index_df.empty:
-            print(f"    × 无法获取市场指数 {index_code} 数据, 尝试备用指数。", flush=True)
+            print(f"    × 无法获取市场指数 {index_code} 数据，尝试备用指数。", flush=True)
             index_code_fallback = '000001'
             index_df, _, _ = get_fund_net_values(index_code_fallback, start_date, end_date)
             if index_df.empty:
-                print(f"    × 无法获取市场指数 {index_code_fallback} 数据, 贝塔系数将不可用。", flush=True)
+                print(f"    × 无法获取市场指数 {index_code_fallback} 数据，贝塔系数将不可用。", flush=True)
     except Exception as e:
-        print(f"    × 获取市场指数数据异常: {e}, 贝塔系数将不可用。", flush=True)
+        print(f"    × 获取市场指数数据异常: {e}，贝塔系数将不可用。", flush=True)
 
     results = []
     debug_data = []
@@ -572,7 +573,7 @@ def main():
     if results:
         final_df = pd.DataFrame(results).sort_values('综合评分', ascending=False).reset_index(drop=True)
         final_df.index = final_df.index + 1
-        print("\n--- 筛选完成, 推荐基金列表 ---", flush=True)
+        print("\n--- 筛选完成，推荐基金列表 ---", flush=True)
         print(final_df.drop(columns=['行业分布']).to_string(), flush=True)
         final_df.to_csv('recommended_cn_funds.csv', index=True, index_label='排名', encoding='utf-8-sig')
         print("\n>>> 推荐结果已保存至 recommended_cn_funds.csv", flush=True)
@@ -588,7 +589,7 @@ def main():
             else:
                 print("    × 无持仓数据。", flush=True)
     else:
-        print("\n>>> 未找到符合条件的基金, 建议调整筛选条件。", flush=True)
+        print("\n>>> 未找到符合条件的基金，建议调整筛选条件。", flush=True)
 
     debug_df = pd.DataFrame(debug_data)
     debug_df.to_csv('debug_fund_metrics.csv', index=False, encoding='utf-8-sig')

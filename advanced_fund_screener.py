@@ -109,6 +109,7 @@ def get_fund_details(fund_code):
         fund_code = str(fund_code).zfill(6)
         url = f'http://fund.eastmoney.com/f10/{fund_code}.html'
         tables = pd.read_html(url)
+        print(f"调试: 基金 {fund_code} 详情页表格数量: {len(tables)}")  # 调试日志
         if len(tables) < 2:
             raise ValueError("未能解析到足够的基本信息表格")
         
@@ -118,6 +119,7 @@ def get_fund_details(fund_code):
         # 解析风险指标
         url2 = f'http://fund.eastmoney.com/f10/tsdata_{fund_code}.html'
         tables2 = pd.read_html(url2)
+        print(f"调试: 基金 {fund_code} 风险页表格数量: {len(tables2)}")  # 调试日志
         if len(tables2) < 2:
             raise ValueError("未能解析到风险指标表格")
         
@@ -174,6 +176,8 @@ def get_fund_holdings_with_selenium(fund_code):
     options.add_argument('--headless')
     options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')  # 新增：防内存崩溃
+    options.add_argument('--remote-debugging-port=0')  # 新增：防端口冲突
     options.add_argument(f'user-agent={randHeader()["User-Agent"]}')
     service = Service(ChromeDriverManager().install())
     
@@ -183,13 +187,14 @@ def get_fund_holdings_with_selenium(fund_code):
         url = f'http://fundf10.eastmoney.com/ccmx_{fund_code}.html'
         driver.get(url)
         
-        wait = WebDriverWait(driver, 20)
+        wait = WebDriverWait(driver, 30)  # 延长到30秒
         table_path = '//*[@id="cctable"]/table'
         wait.until(EC.presence_of_element_located((By.XPATH, table_path)))
         
         soup = BeautifulSoup(driver.page_source, 'lxml')
         holdings_table = soup.find('div', class_='fund_ccmx').find('table')
         if not holdings_table:
+            print(f"调试: 基金 {fund_code} 持仓表格未找到，页面长度: {len(driver.page_source)}")  # 调试日志
             return {'concentration': np.nan, 'num_holdings': np.nan}
         
         holdings_data = pd.read_html(str(holdings_table))[0]
@@ -207,6 +212,7 @@ def get_fund_holdings_with_selenium(fund_code):
     
     except (WebDriverException, TimeoutException) as e:
         print(f"在获取基金持仓数据时发生 Selenium 错误: {e}")
+        print(f"调试: 基金 {fund_code} 页面源代码长度: {len(driver.page_source) if driver else 0}")  # 调试日志
         return {'concentration': np.nan, 'num_holdings': np.nan}
     except Exception as e:
         print(f"在获取基金持仓数据时发生其他错误: {e}")
@@ -311,8 +317,10 @@ def main():
     # 合并原始列表和深度数据
     final_df = df.merge(deep_data_df, on=['fund_code', 'fund_name'], how='left')
     
-    # 删除所有深度数据都为空的行
+    # 删除所有深度数据都为空的行（放宽：如果至少有一个非NaN，继续）
     final_df = final_df.dropna(subset=['sharpe_ratio', 'manager_term', 'concentration'], how='all')
+    
+    print(f"调试: 过滤后剩余基金数量: {len(final_df)}")  # 调试日志
 
     if final_df.empty:
         print("\n未能获取任何基金的深度数据，无法进行评分。")

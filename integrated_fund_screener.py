@@ -138,29 +138,41 @@ def get_fund_details(code, proxies=None):
     try:
         url = f'http://fund.eastmoney.com/f10/{code}.html'
         tables = pd.read_html(url, encoding='utf-8')
-        df = tables[1]
-        df1 = df[[0, 1]].set_index(0).T
-        df2 = df[[2, 3]].set_index(2).T
-        df1['code'] = code
-        df2['code'] = code
-        df1.set_index('code', inplace=True)
-        df2.set_index('code', inplace=True)
-        df_details = pd.concat([df1, df2], axis=1)
         
-        url2 = f'http://fund.eastmoney.com/f10/tsdata_{code}.html'
-        tables2 = pd.read_html(url2, encoding='utf-8')
-        df_sharpe = tables2[1]
-        df_sharpe['code'] = code
-        df_sharpe.set_index('code', inplace=True)
-        df_sharpe.drop('基金风险指标', axis='columns', inplace=True, errors='ignore')
-        df_sharpe = df_sharpe[1:]
-        df_sharpe.columns = [f'夏普比率(近{c})' for c in df_sharpe.columns]
-        df_sharpe = df_sharpe.apply(pd.to_numeric, errors='coerce')
+        # 查找包含关键信息的表格
+        details_df = pd.DataFrame()
+        for table in tables:
+            if '成立日期' in table.iloc[:, 0].values:
+                df1 = table[[0, 1]].set_index(0).T
+                df2 = table[[2, 3]].set_index(2).T
+                df1['code'] = code
+                df2['code'] = code
+                df1.set_index('code', inplace=True)
+                df2.set_index('code', inplace=True)
+                details_df = pd.concat([df1, df2], axis=1)
+                break
         
-        df_final = df_details.combine_first(df_sharpe)
+        if details_df.empty:
+            raise ValueError("未找到基金详情表格")
+
+        # 查找夏普比率表格
+        sharpe_df = pd.DataFrame()
+        for table in tables:
+            if '基金风险指标' in table.columns:
+                sharpe_df = table
+                sharpe_df['code'] = code
+                sharpe_df.set_index('code', inplace=True)
+                sharpe_df.drop('基金风险指标', axis='columns', inplace=True, errors='ignore')
+                sharpe_df = sharpe_df[1:]
+                sharpe_df.columns = [f'夏普比率(近{c})' for c in sharpe_df.columns]
+                sharpe_df = sharpe_df.apply(pd.to_numeric, errors='coerce')
+                break
+        
+        df_final = details_df.combine_first(sharpe_df)
         return df_final
     except Exception as e:
         print(f"获取基金 {code} 详情失败: {e}")
+        traceback.print_exc()
         return pd.DataFrame()
 
 def get_fund_basic_info():
@@ -251,25 +263,23 @@ def get_fund_data(code, sdate='', edate='', proxies=None):
         
     # 如果天天基金网失败，则回退到 akshare
     try:
-        # 使用更通用的 akshare 函数
-        df = ak.fund_etf_hist_em(symbol=code, period="daily", start_date=sdate, end_date=edate, adjust="")
-        
+        df = ak.fund_open_fund_info_em(fund=code, indicator="单位净值走势")
         if df.empty:
             raise ValueError("akshare 数据为空")
         
-        # akshare 数据列名可能不同，这里做一下处理
-        df.columns = ['日期', '开盘', '最高', '最低', '收盘', '成交量', '成交额']
-        df = df.rename(columns={'日期': '净值日期', '收盘': '单位净值'})
-        
+        df.columns = ['净值日期', '单位净值', '累计净值']
         df['净值日期'] = pd.to_datetime(df['净值日期'])
         df['单位净值'] = pd.to_numeric(df['单位净值'])
+        df['累计净值'] = pd.to_numeric(df['累计净值'])
         
+        df = df[(df['净值日期'] >= pd.to_datetime(sdate)) & (df['净值日期'] <= pd.to_datetime(edate))]
         df = df.dropna(subset=['净值日期', '单位净值'])
 
         print(f"akshare 获取 {code} 的 {len(df)} 条净值数据")
         return df
     except Exception as e:
         print(f"akshare 解析失败: {e}")
+        traceback.print_exc()
         return pd.DataFrame()
 
 def get_fund_managers(fund_code):

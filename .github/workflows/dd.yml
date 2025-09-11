@@ -24,10 +24,20 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: Cache Python dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          # 缓存键基于 Python 版本和脚本文件的 hash
+          key: ${{ runner.os }}-python-${{ hashFiles('advanced_fund_screener.py') }}
+          restore-keys: |
+            ${{ runner.os }}-python-
+
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
+          pip install --upgrade pip
           pip install pandas requests beautifulsoup4 lxml selenium webdriver-manager numpy
 
       - name: Run Python script

@@ -22,6 +22,7 @@ import plotly.graph_objects as go
 from pymongo import MongoClient
 import random
 from datetime import datetime
+import traceback
 
 def randHeader():
     """随机生成 User-Agent"""
@@ -310,11 +311,16 @@ def get_fund_basic_info(mysql=None):
     return fund_info
 
 def get_fund_data(code, sdate='', edate='', proxies=None, mysql=None, mongodb=None):
-    """获取历史净值，优化分页和备选 akshare（第二、第三、第四篇文章）"""
+    """获取历史净值，优化分页和备选 akshare"""
     url = f'https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=65535&sdate={sdate}&edate={edate}'
     try:
         response = getURL(url, proxies=proxies)
-        tree = etree.HTML(response.text)
+        # 从 JSONP 格式中提取 HTML 内容
+        content_match = re.search(r'content:"(.*?)"', response.text)
+        if not content_match:
+            raise ValueError("未找到净值表格内容")
+        html_content = content_match.group(1).encode('utf-8').decode('unicode_escape')
+        tree = etree.HTML(html_content)
         rows = tree.xpath("//tbody/tr")
         if not rows:
             raise ValueError("未找到净值表格")
@@ -373,7 +379,8 @@ def get_fund_data(code, sdate='', edate='', proxies=None, mysql=None, mongodb=No
     except Exception as e:
         print(f"lxml 解析失败 ({e})，尝试 akshare...")
         try:
-            df = ak.fund_open_fund_daily_em(code=code)
+            # 修正 akshare 函数名称
+            df = ak.fund_em_open_fund_daily(fund=code)
             if df.empty:
                 raise ValueError("akshare 数据为空")
             df['净值日期'] = pd.to_datetime(df['净值日期'], format='mixed', errors='coerce')
@@ -475,10 +482,10 @@ def get_fund_holdings_with_selenium(fund_code):
             print(f"× 未在页面找到表格。URL: {url}")
             return []
 
-        # 查找包含持仓数据的表格
+        # 查找包含持仓数据的表格，修正 DeprecationWarning
         holdings_table = None
         for table in tables:
-            if table.find('th', text='股票名称'):
+            if table.find('th', string='股票名称'):
                 holdings_table = table
                 break
         
@@ -520,12 +527,14 @@ def get_fund_holdings_with_selenium(fund_code):
                     })
                 except (IndexError, ValueError) as e:
                     print(f"解析持仓数据时发生错误：{e}")
+                    traceback.print_exc()
                     continue
         
         return holdings_data
     
     except Exception as e:
         print(f"在获取基金持仓数据时发生错误: {e}")
+        traceback.print_exc()
         return []
     finally:
         if driver:
@@ -620,7 +629,7 @@ def main_scraper(fund_code):
         print(f"成功提取 {len(holdings_data)} 条持仓数据，并保存至 '{output_path}'。")
     
     print(f"开始获取基金 {fund_code} 的经理数据...")
-    get_fund_managers(fund_code, mysql=mysql)
+    get_fund_managers(fund_code, mysql)
     
     print(f"开始分析基金 {fund_code} 的风险参数...")
     analysis_filename = "fund_analysis.json"

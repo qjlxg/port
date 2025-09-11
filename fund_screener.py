@@ -276,34 +276,30 @@ def get_fund_holdings(code):
             return holdings
         except Exception:
             print(f"    调试: 缓存文件 {cache_file} 损坏，将重新获取。", flush=True)
-    
+
     print(f"    调试: 尝试使用 Playwright 获取 {code} 持仓数据。", flush=True)
     
-    # 使用 Playwright 模拟浏览器访问
     try:
         with sync_playwright() as p:
-            # 启动一个无头浏览器
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             url = f"http://fundf10.eastmoney.com/ccmx_{code}.html"
             
-            # 访问页面，增加超时时间
             page.goto(url, timeout=60000)
             
-            # 等待表格加载完成，可以根据实际情况调整选择器和超时时间
+            # 等待表格的父容器加载完成，这里是boxitem
             page.wait_for_selector('div.boxitem table', timeout=60000)
             
-            # 获取页面内容并用 BeautifulSoup 解析
             html_content = page.content()
             browser.close()
             
             soup = BeautifulSoup(html_content, 'html.parser')
+            # 使用更精确的find方法来定位表格
             stock_table = soup.find('div', class_='boxitem').find('table')
             
             if stock_table:
-                # 提取表格数据
                 holdings = []
-                # 忽略表头，从第二行开始遍历
+                # 跳过表头，从第二行开始遍历
                 for row in stock_table.find_all('tr')[1:]:
                     cells = row.find_all('td')
                     if len(cells) >= 4:

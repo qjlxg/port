@@ -286,12 +286,64 @@ def get_fund_basic_info():
     return fund_info
 
 def get_fund_data(code, sdate='', edate='', proxies=None):
-    """获取历史净值，优化分页和备选 akshare"""
+    """通过 Selenium 获取基金历史净值，确保健壮性"""
+    options = Options()
+    options.add_argument('--headless')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--no-sandbox')
+    options.add_argument(f'user-agent={randHeader()["User-Agent"]}')
+    service = Service(ChromeDriverManager().install())
+    
+    driver = None
     try:
-        # 尝试使用 akshare 高效接口
-        print(f"尝试使用 akshare 获取 {code} 的历史净值...")
-        df = ak.fund_em_open_fund_info(fund=code, start_date=sdate, end_date=edate)
-        df.rename(columns={'净值日期': '净值日期', '单位净值': '单位净值', '累计净值': '累计净值', '日增长率': '日增长率'}, inplace=True)
+        print(f"使用 Selenium 获取基金 {code} 的历史净值...")
+        driver = webdriver.Chrome(service=service, options=options)
+        url = f'http://fundf10.eastmoney.com/jjjz_{code}.html'
+        driver.get(url)
+        
+        # 显式等待，直到净值表格出现
+        wait = webdriver.support.ui.WebDriverWait(driver, 20)
+        table_path = '//*[@id="jzTable"]/table'
+        wait.until(webdriver.support.expected_conditions.presence_of_element_located((By.XPATH, table_path)))
+
+        # 如果有日期筛选框，进行筛选
+        if sdate and edate:
+            start_date_input = driver.find_element(By.ID, 'startDate')
+            end_date_input = driver.find_element(By.ID, 'endDate')
+            query_button = driver.find_element(By.ID, 'submitData')
+            
+            start_date_input.clear()
+            start_date_input.send_keys(sdate)
+            end_date_input.clear()
+            end_date_input.send_keys(edate)
+            query_button.click()
+            time.sleep(3) # 等待数据加载
+
+        # 获取完整的页面 HTML 并用 BeautifulSoup 解析
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        table = soup.find('table', {'class': 'w782 comm jzgs'})
+        
+        if not table:
+            raise ValueError("未在页面找到净值表格")
+
+        data = []
+        rows = table.find_all('tr')[1:]  # 跳过表头
+        for row in rows:
+            cols = row.find_all('td')
+            if len(cols) >= 7:
+                data.append({
+                    '净值日期': cols[0].text.strip(),
+                    '单位净值': cols[1].text.strip(),
+                    '累计净值': cols[2].text.strip(),
+                    '日增长率': cols[3].text.strip(),
+                    '申购状态': cols[4].text.strip(),
+                    '赎回状态': cols[5].text.strip(),
+                    '分红送配': cols[6].text.strip()
+                })
+        
+        df = pd.DataFrame(data)
+        if df.empty:
+            raise ValueError("解析数据为空")
         
         # 数据清洗
         df['净值日期'] = pd.to_datetime(df['净值日期'], format='mixed', errors='coerce')
@@ -302,53 +354,27 @@ def get_fund_data(code, sdate='', edate='', proxies=None):
         
         print(f"成功获取 {code} 的 {len(df)} 条净值数据")
         return df
+    
     except Exception as e:
-        print(f"akshare 获取 {code} 历史净值失败: {e}")
-        print("尝试回退到网页爬取...")
-        url = f'https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=65535&sdate={sdate}&edate={edate}'
+        print(f"使用 Selenium 获取基金 {code} 历史净值失败: {e}")
+        traceback.print_exc()
+        # 作为最终备选，尝试 akshare
         try:
-            response = getURL(url, proxies=proxies)
-            # 从 JSONP 格式中提取 HTML 内容
-            content_match = re.search(r'content:"(.*?)"', response.text)
-            if not content_match:
-                raise ValueError("未找到净值表格内容")
-            html_content = content_match.group(1).encode('utf-8').decode('unicode_escape')
-            tree = etree.HTML(html_content)
-            rows = tree.xpath("//tbody/tr")
-            if not rows:
-                raise ValueError("未找到净值表格")
-            
-            data = []
-            for row in rows:
-                cols = row.xpath("./td/text()")
-                if len(cols) >= 7:
-                    data.append({
-                        '净值日期': cols[0].strip(),
-                        '单位净值': cols[1].strip(),
-                        '累计净值': cols[2].strip(),
-                        '日增长率': cols[3].strip(),
-                        '申购状态': cols[4].strip(),
-                        '赎回状态': cols[5].strip(),
-                        '分红送配': cols[6].strip()
-                    })
-            
-            df = pd.DataFrame(data)
-            if df.empty:
-                raise ValueError("解析数据为空")
-            
-            # 数据清洗
-            df['净值日期'] = pd.to_datetime(df['净值日期'], format='mixed', errors='coerce')
-            df['单位净值'] = pd.to_numeric(df['单位净值'], errors='coerce')
-            df['累计净值'] = pd.to_numeric(df['累计净值'], errors='coerce')
-            df['日增长率'] = pd.to_numeric(df['日增长率'].str.strip('%'), errors='coerce') / 100
-            df = df.dropna(subset=['净值日期', '单位净值'])
-            df = df[(df['净值日期'] >= sdate) & (df['净值日期'] <= edate)] if sdate and edate else df
-            
-            print(f"成功获取 {code} 的 {len(df)} 条净值数据")
-            return df
+            print("尝试回退到 akshare...")
+            df = ak.fund_em_open_fund_info(fund=code, start_date=sdate, end_date=edate)
+            df.rename(columns={'净值日期': '净值日期', '单位净值': '单位净值', '累计净值': '累计净值', '日增长率': '日增长率'}, inplace=True)
+            if not df.empty:
+                print(f"akshare 成功获取 {code} 的 {len(df)} 条净值数据")
+                return df
+            else:
+                return pd.DataFrame()
         except Exception as e:
-            print(f"回退到网页爬取也失败了: {e}")
+            print(f"akshare 备选也失败了: {e}")
             return pd.DataFrame()
+    finally:
+        if driver:
+            driver.quit()
+
 
 def get_fund_managers(fund_code, proxies=None):
     """获取基金经理数据，优化筛选逻辑（第五篇文章）"""

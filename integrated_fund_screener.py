@@ -583,8 +583,15 @@ def main_scraper():
         print(f"分析结果已保存至 '{analysis_path}'。")
         
         risk_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), risk_filename)
+        # 修复了这里的语法错误
         risk_data = {
             "fund_code": fund_code,
             "annual_returns": analysis_result.get("annual_returns", None),
-            "annual_volatility": analysis_result
+            "annual_volatility": analysis_result.get("annual_volatility", None)
         }
+        with open(risk_path, 'w', encoding='utf-8') as f:
+            json.dump(risk_data, f, indent=4, ensure_ascii=False)
+        print(f"风险指标数据已保存至 '{risk_path}'。")
+        
+if __name__ == '__main__':
+    main_scraper()

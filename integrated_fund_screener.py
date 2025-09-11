@@ -301,8 +301,18 @@ def get_fund_holdings_with_selenium(fund_code):
     options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
     options.add_argument(f'user-agent={randHeader()["User-Agent"]}')
-    service = Service(ChromeDriverManager().install())
     
+    # 尝试使用系统已安装的 ChromeDriver，如果失败则回退到 webdriver-manager
+    try:
+        # Check if a custom path for chromedriver exists
+        driver_path = '/usr/lib/chromium-browser/chromedriver'
+        if not os.path.exists(driver_path):
+            driver_path = ChromeDriverManager().install()
+        service = Service(driver_path)
+    except Exception as e:
+        print(f"无法安装或找到 ChromeDriver: {e}")
+        return []
+
     driver = None
     try:
         driver = webdriver.Chrome(service=service, options=options)

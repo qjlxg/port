@@ -266,9 +266,13 @@ def get_fund_holdings(code):
     
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            # 浏览器启动时增加超时设置，避免启动过慢
+            browser = p.chromium.launch(headless=True, timeout=60000)
             page = browser.new_page()
-            page.goto(f"http://fundf10.eastmoney.com/ccmx_{code}.html", timeout=60000)
+            # 页面导航时增加超时设置，等待页面完全加载
+            page.goto(f"http://fundf10.eastmoney.com/ccmx_{code}.html", timeout=90000, wait_until='domcontentloaded')
+            
+            # 等待表格加载，增加超时时间
             page.wait_for_selector('div.boxitem table', timeout=60000)
             html_content = page.content()
             browser.close()
@@ -291,6 +295,7 @@ def get_fund_holdings(code):
                         pickle.dump(holdings, f)
                 return holdings
             return []
+    # 增加异常处理，捕获 Playwright 可能抛出的所有错误
     except Exception as e:
         print(f"    × Playwright 请求或解析失败: {e}", flush=True)
         return []

@@ -49,19 +49,49 @@ def getURL(url, tries_num=5, sleep_time=1, time_out=10, proxies=None):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 请求 {url} 失败，已达最大重试次数")
     return None
 
+def get_fund_name(fund_code):
+    """辅助函数：从东方财富网获取基金名称"""
+    try:
+        url = f'http://fund.eastmoney.com/{fund_code}.html'
+        res = getURL(url)
+        if not res:
+            return '未知基金'
+        soup = BeautifulSoup(res.text, 'html.parser')
+        title_elem = soup.find('h1', class_='fundName') or soup.find('title')
+        if title_elem:
+            name = title_elem.get_text().strip().split('-')[0].strip()  # 提取名称
+            return name
+        return '未知基金'
+    except Exception as e:
+        print(f"获取基金 {fund_code} 名称失败: {e}")
+        return '未知基金'
+
 def get_initial_fund_list():
-    """从 GitHub URL 读取基金代码和名称"""
+    """从 GitHub URL 读取基金代码，并动态获取名称和排名数据"""
     url = 'https://raw.githubusercontent.com/qjlxg/rep/refs/heads/main/fund_rankings.csv'
     try:
         df = pd.read_csv(url)
         print(f"成功从 {url} 获取数据。当前列名: {df.columns.tolist()}")
         
-        # 修正列名，直接指定为 '代码' 和 '名称'
-        df = df[['代码', '名称']]
-        df.columns = ['fund_code', 'fund_name']
+        # 重命名 code 列为 fund_code
+        if 'code' in df.columns:
+            df = df.rename(columns={'code': 'fund_code'})
+        else:
+            raise ValueError("CSV 中缺少 'code' 列")
         
-        df = df.dropna()
-        print(f"成功筛选出 {len(df)} 只基金。")
+        # 添加 fund_name 列（初始为空）
+        df['fund_name'] = ''
+        
+        # 动态获取基金名称（前20个，与 main() 保持一致）
+        funds_to_name = df['fund_code'].head(20).tolist()
+        for fund_code in funds_to_name:
+            name = get_fund_name(fund_code)
+            df.loc[df['fund_code'] == fund_code, 'fund_name'] = name
+            time.sleep(random.uniform(0.5, 1.5))  # 避免请求过频
+        
+        # 保留关键列：fund_code, fund_name, rank(1y)
+        df = df[['fund_code', 'fund_name', 'rank(1y)']].dropna(subset=['fund_code'])
+        print(f"成功筛选出 {len(df)} 只基金，并获取了名称。")
         return df
     except Exception as e:
         print(f"从 GitHub 获取基金列表失败: {e}")

@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install selenium webdriver-manager pandas requests beautifulsoup4 numpy yfinance matplotlib seaborn lxml pymysql openpyxl akshare plotly pymongo
+          pip install --upgrade selenium webdriver-manager pandas requests beautifulsoup4 numpy yfinance matplotlib seaborn lxml pymysql openpyxl akshare plotly pymongo
           pip install playwright
           python -m playwright install
 

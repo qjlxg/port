@@ -326,41 +326,18 @@ def get_fund_basic_info(mysql=None):
 
 def get_fund_data(code, sdate='', edate='', proxies=None, mysql=None, mongodb=None):
     """获取历史净值，优化分页和备选 akshare"""
-    url = f'https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=65535&sdate={sdate}&edate={edate}'
     try:
-        response = getURL(url, proxies=proxies)
-        content_match = re.search(r'content:"(.*?)"', response.text)
-        if not content_match:
-            raise ValueError("未找到净值表格内容")
-        html_content = content_match.group(1).encode('utf-8').decode('unicode_escape')
-        tree = etree.HTML(html_content)
-        rows = tree.xpath("//tbody/tr")
-        if not rows:
-            raise ValueError("未找到净值表格")
-        
-        data = []
-        for row in rows:
-            cols = row.xpath("./td/text()")
-            if len(cols) >= 7:
-                data.append({
-                    '净值日期': cols[0].strip(),
-                    '单位净值': cols[1].strip(),
-                    '累计净值': cols[2].strip(),
-                    '日增长率': cols[3].strip(),
-                    '申购状态': cols[4].strip(),
-                    '赎回状态': cols[5].strip(),
-                    '分红送配': cols[6].strip()
-                })
-        
-        df = pd.DataFrame(data)
+        # 新增: 使用 akshare 获取净值
+        print(f"尝试用 akshare 获取基金 {code} 的历史净值...")
+        df = ak.fund_open_fund_info_em(fund=code, indicator='单位净值走势')
         if df.empty:
-            raise ValueError("解析数据为空")
-        
-        df['净值日期'] = pd.to_datetime(df['净值日期'], format='mixed', errors='coerce')
-        df['单位净值'] = pd.to_numeric(df['单位净值'], errors='coerce')
-        df['累计净值'] = pd.to_numeric(df['累计净值'], errors='coerce')
+            raise ValueError("akshare 数据为空")
+            
+        df['净值日期'] = pd.to_datetime(df['净值日期'])
+        df['单位净值'] = pd.to_numeric(df['单位净值'])
+        df['累计净值'] = pd.to_numeric(df['累计净值'])
         df['日增长率'] = pd.to_numeric(df['日增长率'].str.strip('%'), errors='coerce') / 100
-        df = df.dropna(subset=['净值日期', '单位净值'])
+        df = df[(df['净值日期'] >= pd.to_datetime(sdate)) & (df['净值日期'] <= pd.to_datetime(edate))]
         
         if mysql:
             for _, row in df.iterrows():
@@ -368,45 +345,71 @@ def get_fund_data(code, sdate='', edate='', proxies=None, mysql=None, mongodb=No
                     'the_date': row['净值日期'],
                     'fund_code': code,
                     'nav': row['单位净值'],
-                    'add_nav': row['累计净值'],
-                    'nav_chg_rate': row['日增长率'],
-                    'buy_state': row['申购状态'],
-                    'sell_state': row['赎回状态'],
-                    'div': row['分红送配'],
+                    'add_nav': row.get('累计净值', None),
+                    'nav_chg_rate': row.get('日增长率', None),
+                    'buy_state': row.get('申购状态', 'N/A'),
+                    'sell_state': row.get('赎回状态', 'N/A'),
+                    'div': row.get('分红送配', 'N/A'),
                     'created_date': time.strftime('%Y-%m-%d %H:%M:%S'),
                     'updated_date': time.strftime('%Y-%m-%d %H:%M:%S')
                 }
                 mysql.insertData('fund_nav', result)
-            print(f"基金 {code} 的净值数据已保存到 MySQL fund_nav 表")
-        
         if mongodb:
             client = MongoClient('mongodb://localhost:27017/')
             db = client['fund_db']
             collection = db[f'nav_{code}']
             collection.insert_many(df.to_dict('records'))
-            print(f"基金 {code} 的净值数据已保存到 MongoDB nav_{code} 集合")
-        
-        print(f"成功获取 {code} 的 {len(df)} 条净值数据")
+        print(f"akshare 获取 {code} 的 {len(df)} 条净值数据")
         return df
     except Exception as e:
-        print(f"lxml 解析失败 ({e})，尝试 akshare...")
+        print(f"akshare 获取失败 ({e})，回退到天天基金网网页抓取...")
+        url = f'https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=65535&sdate={sdate}&edate={edate}'
         try:
-            df = ak.fund_open_fund_daily(fund=code)
+            response = getURL(url, proxies=proxies)
+            content_match = re.search(r'content:"(.*?)"', response.text)
+            if not content_match:
+                raise ValueError("未找到净值表格内容")
+            html_content = content_match.group(1).encode('utf-8').decode('unicode_escape')
+            tree = etree.HTML(html_content)
+            rows = tree.xpath("//tbody/tr")
+            if not rows:
+                raise ValueError("未找到净值表格")
+            
+            data = []
+            for row in rows:
+                cols = row.xpath("./td/text()")
+                if len(cols) >= 7:
+                    data.append({
+                        '净值日期': cols[0].strip(),
+                        '单位净值': cols[1].strip(),
+                        '累计净值': cols[2].strip(),
+                        '日增长率': cols[3].strip(),
+                        '申购状态': cols[4].strip(),
+                        '赎回状态': cols[5].strip(),
+                        '分红送配': cols[6].strip()
+                    })
+            
+            df = pd.DataFrame(data)
             if df.empty:
-                raise ValueError("akshare 数据为空")
+                raise ValueError("解析数据为空")
+            
             df['净值日期'] = pd.to_datetime(df['净值日期'], format='mixed', errors='coerce')
-            df = df[(df['净值日期'] >= pd.to_datetime(sdate)) & (df['净值日期'] <= pd.to_datetime(edate))]
+            df['单位净值'] = pd.to_numeric(df['单位净值'], errors='coerce')
+            df['累计净值'] = pd.to_numeric(df['累计净值'], errors='coerce')
+            df['日增长率'] = pd.to_numeric(df['日增长率'].str.strip('%'), errors='coerce') / 100
+            df = df.dropna(subset=['净值日期', '单位净值'])
+            
             if mysql:
                 for _, row in df.iterrows():
                     result = {
                         'the_date': row['净值日期'],
                         'fund_code': code,
                         'nav': row['单位净值'],
-                        'add_nav': row.get('累计净值', None),
-                        'nav_chg_rate': row.get('日增长率', None),
-                        'buy_state': row.get('申购状态', 'N/A'),
-                        'sell_state': row.get('赎回状态', 'N/A'),
-                        'div': row.get('分红送配', 'N/A'),
+                        'add_nav': row['累计净值'],
+                        'nav_chg_rate': row['日增长率'],
+                        'buy_state': row['申购状态'],
+                        'sell_state': row['赎回状态'],
+                        'div': row['分红送配'],
                         'created_date': time.strftime('%Y-%m-%d %H:%M:%S'),
                         'updated_date': time.strftime('%Y-%m-%d %H:%M:%S')
                     }
@@ -416,10 +419,10 @@ def get_fund_data(code, sdate='', edate='', proxies=None, mysql=None, mongodb=No
                 db = client['fund_db']
                 collection = db[f'nav_{code}']
                 collection.insert_many(df.to_dict('records'))
-            print(f"akshare 获取 {code} 的 {len(df)} 条净值数据")
+            print(f"成功获取 {code} 的 {len(df)} 条净值数据")
             return df
         except Exception as e:
-            print(f"akshare 解析失败: {e}")
+            print(f"网页抓取失败: {e}")
             traceback.print_exc()
             return pd.DataFrame()
 
@@ -478,10 +481,14 @@ def get_fund_holdings_with_selenium(fund_code):
     options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
     options.add_argument(f'user-agent={randHeader()["User-Agent"]}')
-    service = Service(ChromeDriverManager().install())
+    # 修复: Selenium持仓获取
+    options.add_experimental_option("detach", True)
+    options.add_experimental_option('excludeSwitches', ['enable-automation'])
+    options.add_argument("--disable-blink-features=AutomationControlled")
     
     driver = None
     try:
+        service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
         url = f'http://fundf10.eastmoney.com/ccmx_{fund_code}.html'
         driver.get(url)
@@ -562,6 +569,8 @@ def analyze_fund(fund_code, start_date, end_date, use_yfinance=False, mongodb=No
     else:
         try:
             df = get_fund_data(fund_code, sdate=start_date, edate=end_date, mongodb=mongodb)
+            if df.empty:
+                raise ValueError("没有获取到足够的数据")
             returns = df['单位净值'].pct_change().dropna()
         except Exception as e:
             print(f"akshare 获取 {fund_code} 数据失败: {e}")

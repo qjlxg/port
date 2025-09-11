@@ -34,7 +34,7 @@ jobs:
         run: python advanced_fund_screener.py
 
       - name: Commit and push report
-        uses: stefan-schweiger/git-auto-commit-action@v4
+        uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "Automated: Update advanced_fund_report.csv"
           file_pattern: "advanced_fund_report.csv"

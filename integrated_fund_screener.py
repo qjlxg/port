@@ -13,6 +13,8 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import yfinance as yf
 import akshare as ak
 import random
@@ -285,97 +287,6 @@ def get_fund_basic_info():
     
     return fund_info
 
-def get_fund_data(code, sdate='', edate='', proxies=None):
-    """通过 Selenium 获取基金历史净值，确保健壮性"""
-    options = Options()
-    options.add_argument('--headless')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--no-sandbox')
-    options.add_argument(f'user-agent={randHeader()["User-Agent"]}')
-    service = Service(ChromeDriverManager().install())
-    
-    driver = None
-    try:
-        print(f"使用 Selenium 获取基金 {code} 的历史净值...")
-        driver = webdriver.Chrome(service=service, options=options)
-        url = f'http://fundf10.eastmoney.com/jjjz_{code}.html'
-        driver.get(url)
-        
-        # 显式等待，直到净值表格出现
-        wait = webdriver.support.ui.WebDriverWait(driver, 20)
-        table_path = '//*[@id="jzTable"]/table'
-        wait.until(webdriver.support.expected_conditions.presence_of_element_located((By.XPATH, table_path)))
-
-        # 如果有日期筛选框，进行筛选
-        if sdate and edate:
-            start_date_input = driver.find_element(By.ID, 'startDate')
-            end_date_input = driver.find_element(By.ID, 'endDate')
-            query_button = driver.find_element(By.ID, 'submitData')
-            
-            start_date_input.clear()
-            start_date_input.send_keys(sdate)
-            end_date_input.clear()
-            end_date_input.send_keys(edate)
-            query_button.click()
-            time.sleep(3) # 等待数据加载
-
-        # 获取完整的页面 HTML 并用 BeautifulSoup 解析
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        table = soup.find('table', {'class': 'w782 comm jzgs'})
-        
-        if not table:
-            raise ValueError("未在页面找到净值表格")
-
-        data = []
-        rows = table.find_all('tr')[1:]  # 跳过表头
-        for row in rows:
-            cols = row.find_all('td')
-            if len(cols) >= 7:
-                data.append({
-                    '净值日期': cols[0].text.strip(),
-                    '单位净值': cols[1].text.strip(),
-                    '累计净值': cols[2].text.strip(),
-                    '日增长率': cols[3].text.strip(),
-                    '申购状态': cols[4].text.strip(),
-                    '赎回状态': cols[5].text.strip(),
-                    '分红送配': cols[6].text.strip()
-                })
-        
-        df = pd.DataFrame(data)
-        if df.empty:
-            raise ValueError("解析数据为空")
-        
-        # 数据清洗
-        df['净值日期'] = pd.to_datetime(df['净值日期'], format='mixed', errors='coerce')
-        df['单位净值'] = pd.to_numeric(df['单位净值'], errors='coerce')
-        df['累计净值'] = pd.to_numeric(df['累计净值'], errors='coerce')
-        df['日增长率'] = pd.to_numeric(df['日增长率'].str.strip('%'), errors='coerce') / 100
-        df = df.dropna(subset=['净值日期', '单位净值'])
-        
-        print(f"成功获取 {code} 的 {len(df)} 条净值数据")
-        return df
-    
-    except Exception as e:
-        print(f"使用 Selenium 获取基金 {code} 历史净值失败: {e}")
-        traceback.print_exc()
-        # 作为最终备选，尝试 akshare
-        try:
-            print("尝试回退到 akshare...")
-            df = ak.fund_em_open_fund_info(fund=code, start_date=sdate, end_date=edate)
-            df.rename(columns={'净值日期': '净值日期', '单位净值': '单位净值', '累计净值': '累计净值', '日增长率': '日增长率'}, inplace=True)
-            if not df.empty:
-                print(f"akshare 成功获取 {code} 的 {len(df)} 条净值数据")
-                return df
-            else:
-                return pd.DataFrame()
-        except Exception as e:
-            print(f"akshare 备选也失败了: {e}")
-            return pd.DataFrame()
-    finally:
-        if driver:
-            driver.quit()
-
-
 def get_fund_managers(fund_code, proxies=None):
     """获取基金经理数据，优化筛选逻辑（第五篇文章）"""
     fund_url = f'http://fund.eastmoney.com/f10/jjjl_{fund_code}.html'
@@ -428,8 +339,12 @@ def get_fund_holdings_with_selenium(fund_code):
         driver = webdriver.Chrome(service=service, options=options)
         url = f'http://fundf10.eastmoney.com/ccmx_{fund_code}.html'
         driver.get(url)
-        time.sleep(5)  # 等待页面加载，可根据需要调整
-
+        
+        # 显式等待，直到持仓表格出现
+        wait = WebDriverWait(driver, 20)
+        table_path = '//*[@id="cctable"]/table'
+        wait.until(EC.presence_of_element_located((By.XPATH, table_path)))
+        
         soup = BeautifulSoup(driver.page_source, 'lxml')
         tables = soup.find_all('table')
 
@@ -498,68 +413,20 @@ def get_fund_holdings_with_selenium(fund_code):
         if driver:
             driver.quit()
 
-def analyze_fund(fund_code, start_date, end_date, use_yfinance=False):
-    """分析基金风险指标（第四篇文章）"""
-    data_source = 'yfinance' if use_yfinance else 'akshare'
-    if use_yfinance:
-        try:
-            data = yf.download(fund_code, start=start_date, end=end_date)['Close']
-            returns = data.pct_change().dropna()
-        except Exception as e:
-            print(f"yfinance 下载 {fund_code} 数据失败: {e}")
-            return {"error": "无法获取数据"}
-    else:
-        try:
-            df = get_fund_data(fund_code, sdate=start_date, edate=end_date)
-            if df.empty:
-                raise ValueError("净值数据为空")
-            returns = df['单位净值'].pct_change().dropna()
-        except Exception as e:
-            print(f"获取 {fund_code} 数据失败: {e}")
-            return {"error": "无法获取数据"}
-
-    if returns.empty:
-        return {"error": "没有足够的回报数据进行分析"}
-
-    try:
-        annual_returns = returns.mean() * 252
-        annual_volatility = returns.std() * np.sqrt(252)
-        sharpe_ratio = (annual_returns - 0.03) / annual_volatility if annual_volatility != 0 else 0
-        # 正确回撤计算
-        cum_returns = (1 + returns).cumprod()
-        rolling_max = cum_returns.expanding().max()
-        drawdown = (cum_returns - rolling_max) / rolling_max
-        max_drawdown = drawdown.min()
-        
-        result = {
-            "fund_code": fund_code,
-            "annual_returns": float(annual_returns),
-            "annual_volatility": float(annual_volatility),
-            "sharpe_ratio": float(sharpe_ratio),
-            "max_drawdown": float(max_drawdown),
-            "data_source": data_source
-        }
-        return result
-    except Exception as e:
-        print(f"分析基金 {fund_code} 风险参数失败: {e}")
-        return {"error": "风险参数计算失败"}
-
 def main_scraper():
     """主函数，获取所有场外C类基金并筛选推荐基金列表"""
     print("开始获取全量基金基本信息...")
     fund_info = get_fund_basic_info()
     
-    # 修复：宽松过滤场外C类基金
-    # 场外：代码6位，类型不含ETF/LOF/场内
+    # 宽松过滤场外C类基金
     fund_info = fund_info[fund_info['代码'].str.len() == 6]
     fund_info = fund_info[~fund_info['类型'].str.contains('ETF|LOF|场内', na=False, regex=True)]
-    # C类：名称含C或C类
     fund_info = fund_info[fund_info['名称'].str.contains('C$|C类', na=False, regex=True)]
     fund_codes = fund_info['代码'].tolist()
     print(f"过滤后只保留场外C类基金：{len(fund_info)} 只")
 
-    # 性能优化：测试限 50 只（生产移除）
-    fund_codes_to_process = fund_codes[:150]  # 临时限量，跑通后注释掉
+    # 临时限量处理
+    fund_codes_to_process = fund_codes[:150]
     print(f"测试模式：仅处理前 {len(fund_codes_to_process)} 只场外C类基金")
 
     print("开始获取基金排名并筛选...")
@@ -571,14 +438,13 @@ def main_scraper():
         total_records = len(rankings_df)
         recommended_df = apply_4433_rule(rankings_df, total_records)
         
-        # 修复: 在这里将筛选后的基金代码与 fund_info 合并，以重新获取名称列
         recommended_df = pd.merge(recommended_df, fund_info[['代码', '名称']], left_index=True, right_on='代码', how='inner')
         recommended_df = recommended_df.set_index('代码')
         
         recommended_path = 'recommended_cn_funds.csv'
         recommended_df.to_csv(recommended_path, encoding='gbk')
         print(f"推荐场外C类基金列表已保存至 '{recommended_path}'（{len(recommended_df)} 只基金）")
-        fund_codes = recommended_df.index.tolist()[:20]  # 限筛选后 20 只
+        fund_codes = recommended_df.index.tolist()[:20]
     else:
         print("排名数据为空，使用前 10 只场外C类基金继续处理")
         fund_codes = fund_codes[:10]
@@ -590,10 +456,6 @@ def main_scraper():
         print(f"获取基金 {fund_code} 的基本信息...")
         get_fund_details(fund_code)
         
-        # 获取历史净值
-        print(f"获取基金 {fund_code} 的历史净值...")
-        get_fund_data(fund_code, sdate=start_date, edate=end_date)
-        
         # 获取持仓数据
         print(f"使用 Selenium 获取基金 {fund_code} 的持仓数据...")
         holdings_data = get_fund_holdings_with_selenium(fund_code)
@@ -601,27 +463,6 @@ def main_scraper():
         # 获取基金经理数据
         print(f"获取基金 {fund_code} 的经理数据...")
         get_fund_managers(fund_code)
-        
-        # 分析风险指标
-        print(f"分析基金 {fund_code} 的风险参数...")
-        analysis_filename = f"fund_analysis_{fund_code}.json"
-        risk_filename = f"risk_metrics_{fund_code}.json"
-        analysis_result = analyze_fund(fund_code, start_date, end_date, use_yfinance=False)
-        
-        analysis_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), analysis_filename)
-        with open(analysis_path, 'w', encoding='utf-8') as f:
-            json.dump(analysis_result, f, indent=4, ensure_ascii=False)
-        print(f"分析结果已保存至 '{analysis_path}'。")
-        
-        risk_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), risk_filename)
-        risk_data = {
-            "fund_code": fund_code,
-            "annual_returns": analysis_result.get("annual_returns", None),
-            "annual_volatility": analysis_result.get("annual_volatility", None)
-        }
-        with open(risk_path, 'w', encoding='utf-8') as f:
-            json.dump(risk_data, f, indent=4, ensure_ascii=False)
-        print(f"风险指标数据已保存至 '{risk_path}'。")
         
 if __name__ == '__main__':
     main_scraper()

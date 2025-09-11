@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install selenium webdriver-manager pandas requests beautifulsoup4 numpy yfinance matplotlib seaborn lxml openpyxl akshare plotly tqdm concurrent-futures requests-retry urllib3
+          pip install selenium webdriver-manager pandas requests beautifulsoup4 numpy yfinance matplotlib seaborn lxml openpyxl akshare plotly tqdm requests-retry urllib3
 
       - name: Install ChromeDriver
         run: |

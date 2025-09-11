@@ -276,105 +276,58 @@ def get_fund_holdings(code):
             return holdings
         except Exception:
             print(f"    调试: 缓存文件 {cache_file} 损坏，将重新获取。", flush=True)
-
-    headers = {
-        'User-Agent': random.choice(USER_AGENTS),
-        'Referer': f'http://fundf10.eastmoney.com/ccmx_{code}.html',
-        'Accept': 'application/json, text/javascript, */*',
-        'Connection': 'keep-alive'
-    }
-
-    # 尝试 JSON API
-    json_api_url = f"https://fund.eastmoney.com/Data/FundStockPosition.aspx?code={code}&rt={int(time.time() * 1000)}"
+    
+    print(f"    调试: 尝试使用 Playwright 获取 {code} 持仓数据。", flush=True)
+    
+    # 使用 Playwright 模拟浏览器访问
     try:
-        response = session.get(json_api_url, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        data = response.json()
-        holdings = []
-        if data and 'data' in data:
-            for item in data['data'][:10]:  # 取前10条
-                holdings.append({
-                    'name': item.get('stock_name', 'N/A'),
-                    'code': item.get('stock_code', 'N/A'),
-                    'ratio': item.get('ratio', '0').replace('%', '')
-                })
-            if holdings:
-                print(f"    调试: 从 JSON API {json_api_url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
-                with open(cache_file, "wb") as f:
-                    pickle.dump(holdings, f)
-                return holdings
-        print(f"    调试: JSON API {json_api_url} 未返回有效数据。", flush=True)
-    except Exception as e:
-        print(f"    调试: JSON API 请求或解析失败: {e}", flush=True)
-
-    # 回退到 HTML API
-    html_api_url = f"http://fund.eastmoney.com/Data_holdStock.html?fundCode={code}&pageIndex=1&pageSize=10"
-    try:
-        time.sleep(random.uniform(0.1, 0.5))
-        response = session.get(html_api_url, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        stock_table = soup.find('table', class_=lambda x: x and ('tzxq_table' in x or 'w782' in x or 'comm' in x or 'hold' in x.lower()))
-        if stock_table:
-            holdings = []
-            for row in stock_table.find_all('tr')[1:11]:
-                cells = row.find_all('td')
-                if len(cells) >= 4:
-                    code_text = cells[2].text.strip()
-                    if code_text and code_text.isdigit() and len(code_text) == 6:
-                        holdings.append({
-                            'name': cells[1].text.strip(),
-                            'code': code_text,
-                            'ratio': cells[3].text.strip().replace('%', '')
-                        })
-            if holdings:
-                print(f"    调试: 从 HTML API {html_api_url} 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
-                with open(cache_file, "wb") as f:
-                    pickle.dump(holdings, f)
-                return holdings
-        print(f"    调试: HTML API {html_api_url} 未找到表格数据。", flush=True)
-    except Exception as e:
-        print(f"    调试: HTML API 请求或解析失败: {e}", flush=True)
-
-    # 回退到 Playwright
-    try:
-        print(f"    调试: 尝试使用 Playwright 获取 {code} 持仓数据。", flush=True)
         with sync_playwright() as p:
+            # 启动一个无头浏览器
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             url = f"http://fundf10.eastmoney.com/ccmx_{code}.html"
-            # 增加 page.goto 的超时时间
+            
+            # 访问页面，增加超时时间
             page.goto(url, timeout=60000)
-            # 改进选择器并增加超时时间
+            
+            # 等待表格加载完成，可以根据实际情况调整选择器和超时时间
             page.wait_for_selector('div.boxitem table', timeout=60000)
             
+            # 获取页面内容并用 BeautifulSoup 解析
             html_content = page.content()
             browser.close()
             
             soup = BeautifulSoup(html_content, 'html.parser')
-            
-            stock_table = soup.find('div', class_='boxitem').find('table') if soup.find('div', class_='boxitem') else None
+            stock_table = soup.find('div', class_='boxitem').find('table')
             
             if stock_table:
-                df = pd.read_html(str(stock_table), header=0)[0]
-                if not df.empty:
-                    holdings = []
-                    for _, row in df.iterrows():
+                # 提取表格数据
+                holdings = []
+                # 忽略表头，从第二行开始遍历
+                for row in stock_table.find_all('tr')[1:]:
+                    cells = row.find_all('td')
+                    if len(cells) >= 4:
                         holdings.append({
-                            'name': row['股票名称'],
-                            'code': row['股票代码'],
-                            'ratio': row['占净值比例']
+                            'name': cells[1].text.strip(),
+                            'code': cells[2].text.strip(),
+                            'ratio': cells[3].text.strip().replace('%', '')
                         })
+                
+                if holdings:
                     print(f"    调试: 从 Playwright 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
                     with open(cache_file, "wb") as f:
                         pickle.dump(holdings, f)
                     return holdings
-        print(f"    调试: Playwright {url} 未找到表格数据。", flush=True)
+                else:
+                    print("    调试: Playwright 成功获取页面但未找到有效的表格行。", flush=True)
+                    return []
+            else:
+                print("    调试: Playwright 成功获取页面但未找到持仓表格。", flush=True)
+                return []
     except Exception as e:
         print(f"    调试: Playwright 请求或解析失败: {e}", flush=True)
         traceback.print_exc()
 
-    print(f"    调试: {code} 所有接口均失败，无持仓数据。", flush=True)
     return []
 
 def calculate_beta(fund_returns, market_returns):

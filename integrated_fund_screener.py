@@ -115,8 +115,10 @@ def get_fund_rankings(fund_type='hh', start_date='2018-09-11', end_date='2025-09
             print(f"调试: 响应内容前 200 字符: {content[:200]}")  # 调试打印
             # 修复：用 re 精确剥离 "var rankData = { ... } ;"
             content = re.sub(r'var rankData\s*=\s*({.*?});?', r'\1', content)
-            content = content.strip()
-            content = content.replace('datas', '"datas"').replace('allRecords', '"allRecords"')
+            # 修复 JSON 解析：确保键和字符串都用双引号
+            content = content.replace('datas:', '"datas":').replace('allRecords:', '"allRecords":').replace('success:', '"success":').replace('count:', '"count":')
+            content = re.sub(r'([,{])(\w+):', r'\1"\2":', content)
+            content = content.replace('\'', '"')
             data = json.loads(content)
             records = data['datas']
             total = int(data['allRecords'])
@@ -517,9 +519,7 @@ def main_scraper():
     """主函数，获取所有场外C类基金并筛选推荐基金列表"""
     print("开始获取全量基金基本信息...")
     fund_info = get_fund_basic_info()
-    fund_codes = fund_info['代码'].tolist()
-    print(f"获取到 {len(fund_codes)} 只场外基金")
-
+    
     # 修复：宽松过滤场外C类基金
     # 场外：代码6位，类型不含ETF/LOF/场内
     fund_info = fund_info[fund_info['代码'].str.len() == 6]
@@ -527,11 +527,11 @@ def main_scraper():
     # C类：名称含C或C类
     fund_info = fund_info[fund_info['名称'].str.contains('C$|C类', na=False, regex=True)]
     fund_codes = fund_info['代码'].tolist()
-    print(f"过滤后只保留场外C类基金：{len(fund_codes)} 只")
+    print(f"过滤后只保留场外C类基金：{len(fund_info)} 只")
 
     # 性能优化：测试限 50 只（生产移除）
-    fund_codes = fund_codes[:150]  # 临时限量，跑通后注释掉
-    print(f"测试模式：仅处理前 {len(fund_codes)} 只场外C类基金")
+    fund_codes_to_process = fund_codes[:150]  # 临时限量，跑通后注释掉
+    print(f"测试模式：仅处理前 {len(fund_codes_to_process)} 只场外C类基金")
 
     print("开始获取基金排名并筛选...")
     end_date = datetime.now().strftime('%Y-%m-%d')
@@ -541,9 +541,11 @@ def main_scraper():
     if not rankings_df.empty:
         total_records = len(rankings_df)
         recommended_df = apply_4433_rule(rankings_df, total_records)
-        # 筛选后过滤场外C类（名称含C）
-        recommended_df = recommended_df[recommended_df.index.astype(str).str.len() == 6]  # 6位代码
-        recommended_df = recommended_df[recommended_df.name.str.contains('C$|C类', na=False, regex=True)]  # 名称含C
+        
+        # 修复: 在这里将筛选后的基金代码与 fund_info 合并，以重新获取名称列
+        recommended_df = pd.merge(recommended_df, fund_info[['代码', '名称']], left_index=True, right_on='代码', how='inner')
+        recommended_df = recommended_df.set_index('代码')
+        
         recommended_path = 'recommended_cn_funds.csv'
         recommended_df.to_csv(recommended_path, encoding='gbk')
         print(f"推荐场外C类基金列表已保存至 '{recommended_path}'（{len(recommended_df)} 只基金）")
@@ -583,7 +585,6 @@ def main_scraper():
         print(f"分析结果已保存至 '{analysis_path}'。")
         
         risk_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), risk_filename)
-        # 修复了这里的语法错误
         risk_data = {
             "fund_code": fund_code,
             "annual_returns": analysis_result.get("annual_returns", None),

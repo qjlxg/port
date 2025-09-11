@@ -15,6 +15,11 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import yfinance as yf
 import akshare as ak
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pymysql
+import plotly.graph_objects as go
+from pymongo import MongoClient
 import random
 from datetime import datetime, date, timedelta
 import traceback
@@ -49,25 +54,77 @@ def getURL(url, tries_num=5, sleep_time=1, time_out=10, proxies=None):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 请求 {url} 失败，已达最大重试次数")
     return None
 
+class PyMySQL:
+    """MySQL 操作类"""
+    def __init__(self, host, user, passwd, db, port=3306, charset='utf8'):
+        try:
+            self.db = pymysql.connect(host=host, user=user, passwd=passwd, db=db, port=port, charset=charset)
+            self.db.ping(True)
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] MySQL 连接成功: {user}@{host}:{port}/{db}")
+            self.cur = self.db.cursor()
+        except Exception as e:
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] MySQL 连接失败: {e}")
+            raise
+
+    def insertData(self, table, my_dict):
+        try:
+            cols = ', '.join(my_dict.keys())
+            values = '","'.join([str(v).replace('"', '') for v in my_dict.values()])
+            sql = f"replace into {table} ({cols}) values (\"{values}\")"
+            result = self.cur.execute(sql)
+            self.db.commit()
+            return result
+        except Exception as e:
+            self.db.rollback()
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 数据插入失败: {e}")
+            return 0
+
+def get_fund_codes_from_csv():
+    """从 CSV 读取基金代码"""
+    file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fund_codes.csv')
+    if os.path.exists(file_path):
+        fund_code = pd.read_csv(file_path, encoding='gbk')
+        return fund_code['trade_code'].tolist()
+    print(f"未找到 {file_path}，将爬取全量基金代码")
+    return None
+
 def get_realtime_valuation(fund_code):
-    """获取实时估值"""
+    """获取实时估值（第一篇文章）"""
     try:
         url = f"http://fundgz.1234567.com.cn/js/{fund_code}.js"
         response = getURL(url)
         if response:
             data = json.loads(response.text.replace('jsonpgz(', '').replace(');', ''))
             realtime_price = float(data['dwjz'])
+            management_fee = 0.001
+            daily_fee = (1 + management_fee) ** (1/365) - 1
+            net_value = realtime_price * (1 - daily_fee)
             return {
                 'fund_code': fund_code,
                 'realtime_price': realtime_price,
+                'net_value': net_value,
                 'valuation_date': data.get('gztime', time.strftime('%Y-%m-%d %H:%M:%S'))
             }
     except Exception as e:
         print(f"天天基金实时估值失败 ({fund_code}): {e}")
-    return None
+        try:
+            fund_data = yf.Ticker(fund_code)
+            realtime_price = fund_data.history(period="1d")['Close'].iloc[-1]
+            management_fee = 0.001
+            daily_fee = (1 + management_fee) ** (1/365) - 1
+            net_value = realtime_price * (1 - daily_fee)
+            return {
+                'fund_code': fund_code,
+                'realtime_price': realtime_price,
+                'net_value': net_value,
+                'valuation_date': time.strftime('%Y-%m-%d %H:%M:%S')
+            }
+        except Exception as e:
+            print(f"yfinance 实时估值失败 ({fund_code}): {e}")
+            return None
 
 def get_fund_rankings(fund_type='hh', proxies=None):
-    """获取基金排名数据，优化分页处理"""
+    """获取基金排名数据，优化分页处理（第二、第四篇文章）"""
     today = date.today()
     periods = {
         '3y': (today - timedelta(days=365*3)).strftime('%Y-%m-%d'),
@@ -111,12 +168,12 @@ def get_fund_rankings(fund_type='hh', proxies=None):
             
     if all_data:
         df_final = all_data[0]
-        for i, df in enumerate(all_data[1:]):
+        for df in all_data[1:]:
             df_final = df_final.join(df.drop('name', axis=1), how='inner')
         df_final.to_csv('fund_rankings.csv', encoding='gbk')
         print(f"排名数据已保存至 'fund_rankings.csv'")
         return df_final
-    print("所有排名数据获取失败")
+    print("所有排名数据获取失败，将使用推荐基金列表")
     return pd.DataFrame()
 
 def apply_4433_rule(df):
@@ -133,8 +190,8 @@ def apply_4433_rule(df):
     print(f"四四三三法则筛选出 {len(filtered_df)} 只基金")
     return filtered_df
 
-def get_fund_details(code, proxies=None):
-    """获取基金基本信息和夏普比率，优化数据清洗"""
+def get_fund_details(code, proxies=None, mysql=None):
+    """获取基金基本信息和夏普比率，优化数据清洗（第四、第五篇文章）"""
     try:
         url = f'http://fund.eastmoney.com/f10/{code}.html'
         tables = pd.read_html(url, encoding='utf-8')
@@ -169,14 +226,50 @@ def get_fund_details(code, proxies=None):
                 break
         
         df_final = details_df.combine_first(sharpe_df)
+        if mysql:
+            result = {
+                'fund_code': code,
+                'fund_name': df_final.get('基金全称', ['N/A'])[0],
+                'fund_type': df_final.get('基金类型', ['N/A'])[0],
+                'asset_value': df_final.get('资产规模', ['N/A'])[0],
+                'sharpe_3y': df_final.get('夏普比率(近3年)', ['N/A'])[0],
+                'data_source': 'eastmoney',
+                'created_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'updated_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'created_by': 'eastmoney',
+                'updated_by': 'eastmoney'
+            }
+            mysql.insertData('fund_info', result)
         return df_final
     except Exception as e:
         print(f"获取基金 {code} 详情失败: {e}")
         traceback.print_exc()
         return pd.DataFrame()
 
-def get_fund_basic_info():
-    """获取全量基金基本信息，添加 akshare 备选"""
+def filter_recommended_funds(csv_path='recommended_cn_funds.csv', conditions=None):
+    """基于推荐基金 CSV 进行二次筛选，优化条件筛选（第五篇文章）"""
+    try:
+        df = pd.read_csv(csv_path, encoding='utf-8')
+        filtered_df = df.copy()
+        
+        if conditions:
+            for key, value in conditions.items():
+                if isinstance(value, tuple):
+                    filtered_df = filtered_df[(filtered_df[key] >= value[0]) & (filtered_df[key] <= value[1])]
+                else:
+                    filtered_df = filtered_df[filtered_df[key] >= value]
+        
+        filtered_df = filtered_df.sort_values(by='综合评分', ascending=False)
+        output_path = 'filtered_funds.csv'
+        filtered_df.to_csv(output_path, encoding='gbk', index=False)
+        print(f"二次筛选结果已保存至 '{output_path}'（{len(filtered_df)} 只基金）")
+        return filtered_df
+    except Exception as e:
+        print(f"二次筛选失败: {e}")
+        return pd.DataFrame()
+
+def get_fund_basic_info(mysql=None):
+    """获取全量基金基本信息，添加 akshare 备选（第三、第六篇文章）"""
     try:
         url = 'http://fund.eastmoney.com/js/fundcode_search.js'
         response = getURL(url)
@@ -214,13 +307,26 @@ def get_fund_basic_info():
     fund_codes_df.to_csv(codes_path, index=False, encoding='utf-8')
     print(f"全量基金代码列表已保存至 '{codes_path}'（{len(fund_info)} 只基金）")
     
+    if mysql:
+        for _, row in fund_info.iterrows():
+            result = {
+                'fund_code': row['代码'],
+                'fund_name': row['名称'],
+                'fund_type': row['类型'],
+                'data_source': 'eastmoney',
+                'created_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'updated_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'created_by': 'eastmoney',
+                'updated_by': 'eastmoney'
+            }
+            mysql.insertData('fund_info', result)
+        print("基金基本信息已保存到 MySQL fund_info 表")
+    
     return fund_info
 
-def get_fund_data(code, sdate='', edate='', proxies=None):
+def get_fund_data(code, sdate='', edate='', proxies=None, mysql=None, mongodb=None):
     """获取历史净值，优化分页和备选 akshare"""
     url = f'https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=65535&sdate={sdate}&edate={edate}'
-    
-    # 尝试从天天基金网获取数据
     try:
         response = getURL(url, proxies=proxies)
         content_match = re.search(r'content:"(.*?)"', response.text)
@@ -256,34 +362,69 @@ def get_fund_data(code, sdate='', edate='', proxies=None):
         df['日增长率'] = pd.to_numeric(df['日增长率'].str.strip('%'), errors='coerce') / 100
         df = df.dropna(subset=['净值日期', '单位净值'])
         
+        if mysql:
+            for _, row in df.iterrows():
+                result = {
+                    'the_date': row['净值日期'],
+                    'fund_code': code,
+                    'nav': row['单位净值'],
+                    'add_nav': row['累计净值'],
+                    'nav_chg_rate': row['日增长率'],
+                    'buy_state': row['申购状态'],
+                    'sell_state': row['赎回状态'],
+                    'div': row['分红送配'],
+                    'created_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+                    'updated_date': time.strftime('%Y-%m-%d %H:%M:%S')
+                }
+                mysql.insertData('fund_nav', result)
+            print(f"基金 {code} 的净值数据已保存到 MySQL fund_nav 表")
+        
+        if mongodb:
+            client = MongoClient('mongodb://localhost:27017/')
+            db = client['fund_db']
+            collection = db[f'nav_{code}']
+            collection.insert_many(df.to_dict('records'))
+            print(f"基金 {code} 的净值数据已保存到 MongoDB nav_{code} 集合")
+        
         print(f"成功获取 {code} 的 {len(df)} 条净值数据")
         return df
     except Exception as e:
         print(f"lxml 解析失败 ({e})，尝试 akshare...")
-        
-    # 如果天天基金网失败，则回退到 akshare
-    try:
-        df = ak.fund_open_fund_info_em(fund=code, indicator="单位净值走势")
-        if df.empty:
-            raise ValueError("akshare 数据为空")
-        
-        df.columns = ['净值日期', '单位净值', '累计净值']
-        df['净值日期'] = pd.to_datetime(df['净值日期'])
-        df['单位净值'] = pd.to_numeric(df['单位净值'])
-        df['累计净值'] = pd.to_numeric(df['累计净值'])
-        
-        df = df[(df['净值日期'] >= pd.to_datetime(sdate)) & (df['净值日期'] <= pd.to_datetime(edate))]
-        df = df.dropna(subset=['净值日期', '单位净值'])
+        try:
+            df = ak.fund_open_fund_daily(fund=code)
+            if df.empty:
+                raise ValueError("akshare 数据为空")
+            df['净值日期'] = pd.to_datetime(df['净值日期'], format='mixed', errors='coerce')
+            df = df[(df['净值日期'] >= pd.to_datetime(sdate)) & (df['净值日期'] <= pd.to_datetime(edate))]
+            if mysql:
+                for _, row in df.iterrows():
+                    result = {
+                        'the_date': row['净值日期'],
+                        'fund_code': code,
+                        'nav': row['单位净值'],
+                        'add_nav': row.get('累计净值', None),
+                        'nav_chg_rate': row.get('日增长率', None),
+                        'buy_state': row.get('申购状态', 'N/A'),
+                        'sell_state': row.get('赎回状态', 'N/A'),
+                        'div': row.get('分红送配', 'N/A'),
+                        'created_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+                        'updated_date': time.strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    mysql.insertData('fund_nav', result)
+            if mongodb:
+                client = MongoClient('mongodb://localhost:27017/')
+                db = client['fund_db']
+                collection = db[f'nav_{code}']
+                collection.insert_many(df.to_dict('records'))
+            print(f"akshare 获取 {code} 的 {len(df)} 条净值数据")
+            return df
+        except Exception as e:
+            print(f"akshare 解析失败: {e}")
+            traceback.print_exc()
+            return pd.DataFrame()
 
-        print(f"akshare 获取 {code} 的 {len(df)} 条净值数据")
-        return df
-    except Exception as e:
-        print(f"akshare 解析失败: {e}")
-        traceback.print_exc()
-        return pd.DataFrame()
-
-def get_fund_managers(fund_code):
-    """获取基金经理数据，优化筛选逻辑"""
+def get_fund_managers(fund_code, mysql=None):
+    """获取基金经理数据，优化筛选逻辑（第五篇文章）"""
     fund_url = f'http://fund.eastmoney.com/f10/jjjl_{fund_code}.html'
     try:
         res = getURL(fund_url)
@@ -303,6 +444,18 @@ def get_fund_managers(fund_code):
                         'management_return': tr.select('td:nth-of-type(5)')[0].get_text().strip(),
                         'management_rank': tr.select('td:nth-of-type(6)')[0].get_text().strip()
                     }
+                    if mysql:
+                        result_mysql = {
+                            'fund_code': fund_code,
+                            'manager_name': manager_data['fund_managers'],
+                            'start_date': manager_data['start_date'],
+                            'end_date': manager_data['end_date'],
+                            'term_days': manager_data['term'].split('天')[0].strip(),
+                            'data_source': 'eastmoney',
+                            'created_date': time.strftime('%Y-%m-%d %H:%M:%S'),
+                            'updated_date': time.strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                        mysql.insertData('fund_manager', result_mysql)
                     result.append(manager_data)
                 except IndexError:
                     continue
@@ -325,19 +478,8 @@ def get_fund_holdings_with_selenium(fund_code):
     options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
     options.add_argument(f'user-agent={randHeader()["User-Agent"]}')
+    service = Service(ChromeDriverManager().install())
     
-    # 尝试使用系统已安装的 ChromeDriver，如果失败则回退到 webdriver-manager
-    try:
-        driver_path = '/usr/lib/chromium-browser/chromedriver'
-        if not os.path.exists(driver_path):
-            print("系统未找到 ChromeDriver，尝试通过 webdriver-manager 下载...")
-            driver_path = ChromeDriverManager().install()
-        service = Service(driver_path)
-    except Exception as e:
-        print(f"无法安装或找到 ChromeDriver: {e}")
-        traceback.print_exc()
-        return []
-
     driver = None
     try:
         driver = webdriver.Chrome(service=service, options=options)
@@ -407,34 +549,68 @@ def get_fund_holdings_with_selenium(fund_code):
         if driver:
             driver.quit()
 
-def analyze_fund(fund_code, start_date, end_date):
-    """分析基金风险指标"""
+def analyze_fund(fund_code, start_date, end_date, use_yfinance=False, mongodb=None):
+    """分析基金风险指标（第四篇文章）"""
+    data_source = 'yfinance' if use_yfinance else 'akshare'
+    if use_yfinance:
+        try:
+            data = yf.download(fund_code, start=start_date, end=end_date)['Close']
+            returns = data.pct_change().dropna()
+        except Exception as e:
+            print(f"yfinance 下载 {fund_code} 数据失败: {e}")
+            return {"error": "无法获取数据"}
+    else:
+        try:
+            df = get_fund_data(fund_code, sdate=start_date, edate=end_date, mongodb=mongodb)
+            returns = df['单位净值'].pct_change().dropna()
+        except Exception as e:
+            print(f"akshare 获取 {fund_code} 数据失败: {e}")
+            return {"error": "无法获取数据"}
+
+    if returns.empty:
+        return {"error": "没有足够的回报数据进行分析"}
+
     try:
-        df = get_fund_data(fund_code, sdate=start_date, edate=end_date)
-        if df.empty or '单位净值' not in df.columns:
-            return {"error": "没有足够的回报数据进行分析"}
-
-        returns = df['单位净值'].pct_change().dropna()
-        if returns.empty:
-            return {"error": "没有足够的回报数据进行分析"}
-
         annual_returns = returns.mean() * 252
         annual_volatility = returns.std() * np.sqrt(252)
         sharpe_ratio = (annual_returns - 0.03) / annual_volatility
-        max_drawdown = (returns.min() - returns.max()) / returns.max()  # 计算最大回撤
+        max_drawdown = (returns.min() - returns.max()) / returns.max()
         
         result = {
             "fund_code": fund_code,
             "annual_returns": float(annual_returns),
             "annual_volatility": float(annual_volatility),
             "sharpe_ratio": float(sharpe_ratio),
-            "max_drawdown": float(max_drawdown)
+            "max_drawdown": float(max_drawdown),
+            "data_source": data_source
         }
         return result
     except Exception as e:
         print(f"分析基金 {fund_code} 风险参数失败: {e}")
-        traceback.print_exc()
         return {"error": "风险参数计算失败"}
+
+def plot_returns(fund_code, returns):
+    """绘制基金收益图表"""
+    if returns.empty:
+        print("没有足够的数据进行图表绘制")
+        return None
+    
+    returns_cum = (1 + returns).cumprod()
+    
+    plt.figure(figsize=(10, 6))
+    plt.plot(returns_cum.index, returns_cum.values, label=fund_code)
+    plt.title(f'{fund_code} 累计收益率')
+    plt.xlabel('日期')
+    plt.ylabel('累计收益')
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    
+    chart_path = f"fund_return_hist_{fund_code}.png"
+    plt.savefig(chart_path)
+    plt.close()
+    print(f"收益图表已保存至 {chart_path}")
+    return chart_path
 
 def main_scraper():
     """主函数，用于执行全量基金筛选和分析任务"""
@@ -445,6 +621,16 @@ def main_scraper():
     if all_fund_info.empty:
         print("无法获取任何基金信息，退出。")
         return
+    
+    # 新增: 筛选场外基金
+    print("开始筛选场外基金...")
+    field_funds = ['ETF', 'LOF', 'QDII-ET', 'FOF-LOF', '分级杠杆', '联接基金', 'ETF联接']
+    all_fund_info = all_fund_info[~all_fund_info['类型'].isin(field_funds)]
+    print(f"已剔除场内基金，还剩 {len(all_fund_info)} 只基金")
+
+    # 新增: 筛选C类基金
+    all_fund_info = all_fund_info[all_fund_info['名称'].str.endswith('C', na=False)]
+    print(f"已筛选出 {len(all_fund_info)} 只C类基金")
         
     # 2. 获取基金排名数据并应用四四三三法则
     print("\n开始获取基金排名并应用四四三三法则...")
@@ -453,6 +639,10 @@ def main_scraper():
         print("无法获取排名数据，退出。")
         return
         
+    c_fund_codes = all_fund_info['代码'].tolist()
+    ranking_df = ranking_df[ranking_df.index.isin(c_fund_codes)]
+    print(f"排名数据与C类基金列表合并后，还剩 {len(ranking_df)} 只基金")
+
     selected_funds = apply_4433_rule(ranking_df)
     if selected_funds.empty:
         print("四四三三法则未筛选出符合条件的基金，退出。")
@@ -467,21 +657,13 @@ def main_scraper():
     for code in selected_codes:
         print(f"\n处理基金: {code}...")
         
-        # 获取基本详情
         details_df = get_fund_details(code)
-        
-        # 获取基金经理数据
         managers_data = get_fund_managers(code)
-        
-        # 获取持仓数据
         holdings_data = get_fund_holdings_with_selenium(code)
-
-        # 进行风险分析
         end_date = datetime.now().strftime('%Y-%m-%d')
         start_date = (datetime.now() - pd.DateOffset(years=3)).strftime('%Y-%m-%d')
         analysis_result = analyze_fund(code, start_date, end_date)
         
-        # 合并所有数据
         fund_data = {
             'fund_code': code,
             'name': all_fund_info.loc[all_fund_info['代码'] == code, '名称'].iloc[0] if not all_fund_info[all_fund_info['代码'] == code].empty else 'N/A',
@@ -497,14 +679,12 @@ def main_scraper():
     # 4. 保存最终结果
     print("\n所有筛选和分析任务已完成，开始保存最终结果...")
     
-    # 保存所有分析结果到 JSON
     analysis_filename = "fund_analysis.json"
     analysis_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), analysis_filename)
     with open(analysis_path, 'w', encoding='utf-8') as f:
         json.dump(all_analysis_results, f, indent=4, ensure_ascii=False)
     print(f"所有分析结果已保存至 '{analysis_path}'。")
 
-    # 保存推荐基金列表到 CSV
     recommended_funds_list = []
     for fund in all_analysis_results:
         rec_data = {

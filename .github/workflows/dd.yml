@@ -23,12 +23,16 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install selenium webdriver-manager pandas requests beautifulsoup4 numpy yfinance matplotlib seaborn lxml openpyxl akshare plotly tqdm requests-retry urllib3
+          pip install selenium webdriver-manager pandas requests beautifulsoup4 numpy yfinance matplotlib seaborn lxml openpyxl akshare plotly tqdm requests-retry urllib3 playwright
 
-      - name: Install ChromeDriver
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y chromium-chromedriver
+      - name: Install Playwright
+        run: playwright install chromium
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package.json') }}
 
       - name: Run the data extraction and analysis script
         run: python integrated_fund_screener.py

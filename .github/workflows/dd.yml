@@ -1,73 +1,34 @@
-name: Extract and Save Fund Holdings and Analysis
+name: Advanced Fund Screener
 
 on:
-  push:
-    branches:
-      - main
   schedule:
-    - cron: '0 0 * * *'  # 每天运行一次
-  workflow_dispatch:
+    - cron: '0 12 * * SUN' # Runs every Sunday at 12:00 PM UTC
+  workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
 
 jobs:
-  extract-data:
+  run-screener:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install --upgrade selenium webdriver-manager pandas requests beautifulsoup4 numpy yfinance matplotlib seaborn lxml pymysql openpyxl akshare plotly pymongo
-          pip install playwright
-          python -m playwright install
-
-      - name: Install ChromeDriver
-        run: |
           sudo apt-get update
-          sudo apt-get install -y chromium-chromedriver
+          sudo apt-get install -y google-chrome-stable
+          pip install pandas requests beautifulsoup4 lxml selenium webdriver-manager numpy
 
-      - name: Run the data extraction and analysis script
-        env:
-          MYSQL_HOST: ${{ secrets.MYSQL_HOST }}
-          MYSQL_USER: ${{ secrets.MYSQL_USER }}
-          MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
-          MONGO_URI: ${{ secrets.MONGO_URI }}
-        run: python integrated_fund_screener.py
+      - name: Run Python script
+        run: python advanced_fund_screener.py
 
-      - name: Commit and push the new data and analysis files
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          
-          files=(
-            "fund_holdings.json"
-            "fund_analysis.json"
-            "fund_basic_info.xlsx"
-            "fund_basic_info.csv"
-            "fund_return_hist_*.png"
-            "all_fund_codes.csv"
-            "risk_metrics.json"
-            "fund_managers_*.json"
-            "fund_codes.csv"
-            "fund_rankings.csv"
-            "selected_funds.csv"
-            "valuation_*.json"
-            "manager_index_screened_funds.csv"
-            "fund_plot_*.html"
-            "recommended_cn_funds.csv"
-          )
-          
-          for file in "${files[@]}"; do
-            if ls $file 2>/dev/null; then
-              git add $file
-              git commit -m "Automated: Save $file" || echo "No changes to $file"
-            else
-              echo "未找到..."
-            fi
-          done
+      - name: Commit and push report
+        uses: stefan-schweiger/git-auto-commit-action@v4
+        with:
+          commit_message: "Automated: Update advanced_fund_report.csv"
+          file_pattern: "advanced_fund_report.csv"

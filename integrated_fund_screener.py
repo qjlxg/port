@@ -507,7 +507,7 @@ def main():
         final_df.index = final_df.index + 1
         print("\n--- 筛选完成，推荐基金列表 ---", flush=True)
         print(final_df.drop(columns=['行业分布']).to_string(), flush=True)
-        final_df.to_csv('recommended_cn_funds.csv', index=True, index_label='排名', encoding='utf-8-sig')
+        final_df.to_csv('selected_funds.csv', index=True, index_label='排名', encoding='utf-8-sig')
         print("\n>>> 推荐结果已保存至 recommended_cn_funds.csv", flush=True)
 
         for idx, row in final_df.iterrows():

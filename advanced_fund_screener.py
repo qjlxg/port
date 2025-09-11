@@ -6,12 +6,21 @@ import re
 import numpy as np
 import requests
 from bs4 import BeautifulSoup
-from lxml import etree
-import unicodedata
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import random
 from datetime import datetime
+import traceback
+from io import StringIO
 
 def randHeader():
-    """随机生成 User-Agent，用于伪装浏览器请求"""
+    """Generates a random User-Agent header."""
     head_user_agent = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko',
@@ -26,128 +35,130 @@ def randHeader():
     }
 
 def getURL(url, tries_num=5, sleep_time=1, time_out=10, proxies=None):
-    """增强型 requests，带重试机制和随机延时"""
+    """Robust requests function with retries and random delays."""
     for i in range(tries_num):
         try:
             time.sleep(random.uniform(0.5, sleep_time))
             res = requests.get(url, headers=randHeader(), timeout=time_out, proxies=proxies)
             res.raise_for_status()
-            res.encoding = 'utf-8'  # 强制 UTF-8 编码
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 成功获取 {url}")
+            res.encoding = 'gbk'
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Successfully retrieved {url}")
             return res
         except requests.RequestException as e:
             time.sleep(sleep_time + i * 5)
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {url} 连接失败，第 {i+1} 次重试: {e}")
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 请求 {url} 失败，已达最大重试次数")
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {url} connection failed, retrying ({i+1}/{tries_num}): {e}")
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Request to {url} failed, maximum retries reached.")
     return None
 
 def get_fund_name(fund_code):
-    """辅助函数：从东方财富网获取基金名称"""
+    """Helper function to get the fund name from Eastmoney."""
     try:
-        # 确保基金代码为六位
         fund_code = str(fund_code).zfill(6)
         url = f'http://fund.eastmoney.com/{fund_code}.html'
         res = getURL(url)
         if not res:
-            return '未知基金'
+            return 'Unknown Fund'
         soup = BeautifulSoup(res.text, 'html.parser')
-        title_elem = soup.find('h1', class_='fundName') or soup.find('title')
+        title_elem = soup.find('div', class_='fundDetail-tit') or soup.find('div', class_='fund-title')
         if title_elem:
-            name = unicodedata.normalize('NFKC', title_elem.get_text().strip().split('-')[0].strip())  # 清理乱码
+            name = title_elem.find('h1').get_text().strip().split('(')[0].strip()
             return name
-        return '未知基金'
+        return 'Unknown Fund'
     except Exception as e:
-        print(f"获取基金 {fund_code} 名称失败: {e}")
-        return '未知基金'
+        print(f"Failed to get fund name for {fund_code}: {e}")
+        return 'Unknown Fund'
 
 def get_initial_fund_list():
-    """从 GitHub URL 读取基金代码，并动态获取名称和排名数据"""
+    """Reads fund codes from a GitHub CSV and fetches their names."""
     url = 'https://raw.githubusercontent.com/qjlxg/rep/refs/heads/main/fund_rankings.csv'
     try:
         df = pd.read_csv(url)
-        print(f"成功从 {url} 获取数据。当前列名: {df.columns.tolist()}")
+        print(f"Successfully fetched data from {url}. Columns: {df.columns.tolist()}")
         
-        # 重命名 code 列为 fund_code
         if 'code' in df.columns:
             df = df.rename(columns={'code': 'fund_code'})
         else:
-            raise ValueError("CSV 中缺少 'code' 列")
+            raise ValueError("CSV is missing the 'code' column.")
         
-        # 补齐基金代码为六位
         df['fund_code'] = df['fund_code'].astype(str).str.zfill(6)
-        
-        # 添加 fund_name 列（初始为空）
         df['fund_name'] = ''
         
-        # 动态获取基金名称（前20个，与 main() 保持一致）
         funds_to_name = df['fund_code'].head(20).tolist()
         for fund_code in funds_to_name:
             name = get_fund_name(fund_code)
             df.loc[df['fund_code'] == fund_code, 'fund_name'] = name
-            time.sleep(random.uniform(0.5, 1.5))  # 避免请求过频
+            time.sleep(random.uniform(0.5, 1.5))
         
-        # 保留关键列：fund_code, fund_name, rank(1y)
         df = df[['fund_code', 'fund_name', 'rank(1y)']].dropna(subset=['fund_code'])
-        print(f"成功筛选出 {len(df)} 只基金，并获取了名称。")
+        print(f"Successfully filtered and named {len(df)} funds.")
         return df
     except Exception as e:
-        print(f"从 GitHub 获取基金列表失败: {e}")
+        print(f"Failed to get initial fund list from GitHub: {e}")
         return pd.DataFrame()
 
 def get_fund_details(fund_code):
-    """获取基金基本信息、夏普比率和最大回撤"""
+    """
+    **FIXED:** This function now uses a more robust approach to find
+    and parse tables, making it resistant to minor website structure changes.
+    It no longer relies on hardcoded table indices.
+    """
     try:
-        # 确保基金代码为六位
         fund_code = str(fund_code).zfill(6)
-        url = f'http://fund.eastmoney.com/f10/{fund_code}.html'
-        tables = pd.read_html(url)
-        print(f"调试: 基金 {fund_code} 详情页表格数量: {len(tables)}")
+        url_main = f'http://fund.eastmoney.com/f10/{fund_code}.html'
+        url_risk = f'http://fund.eastmoney.com/f10/tsdata_{fund_code}.html'
         
-        # 解析风险指标
-        url2 = f'http://fund.eastmoney.com/f10/tsdata_{fund_code}.html'
-        tables2 = pd.read_html(url2)
-        print(f"调试: 基金 {fund_code} 风险页表格数量: {len(tables2)}")
+        # Parse risk data from tsdata page
+        res_risk = getURL(url_risk)
+        if not res_risk:
+            raise Exception("Request failed, unable to get risk data.")
+
+        # Use StringIO to suppress the FutureWarning
+        risk_tables = pd.read_html(StringIO(res_risk.text))
         
         sharpe_ratio = np.nan
         max_drawdown = np.nan
         
-        # 动态查找包含夏普比率和最大回撤的表格
-        for table in tables2:
-            if not table.empty and '近1年' in table.to_string():
-                try:
-                    df = table.set_index(0).T
-                    if '夏普比率' in df.columns:
-                        sharpe_ratio = pd.to_numeric(df.get('夏普比率', [np.nan])[0], errors='coerce')
-                    if '最大回撤' in df.columns:
-                        max_drawdown = pd.to_numeric(df.get('最大回撤', [np.nan])[0], errors='coerce')
-                except Exception as e:
-                    print(f"调试: 基金 {fund_code} 表格解析失败: {e}")
-                    continue
+        # Search for tables by keyword
+        for table in risk_tables:
+            if '夏普比率' in table.iloc[:, 0].values:
+                sharpe_ratio = pd.to_numeric(table.loc[0, '近1年'], errors='coerce')
+            if '最大回撤' in table.iloc[:, 0].values:
+                max_drawdown = pd.to_numeric(table.loc[0, '近1年'], errors='coerce')
+
+        if pd.isna(sharpe_ratio) or pd.isna(max_drawdown):
+            raise ValueError("Could not find required risk metrics tables.")
         
         return {
             'sharpe_ratio': sharpe_ratio,
             'max_drawdown': max_drawdown
         }
     except Exception as e:
-        print(f"获取基金 {fund_code} 详情失败: {e}")
+        print(f"Failed to get fund details for {fund_code}: {e}")
+        traceback.print_exc()
         return {
             'sharpe_ratio': np.nan,
             'max_drawdown': np.nan
         }
 
 def get_fund_manager_info(fund_code):
-    """获取基金经理的任职年限"""
+    """
+    **FIXED:** This function now correctly handles the manager's term data
+    by locating the correct table and extracting the text.
+    """
     try:
-        # 确保基金代码为六位
         fund_code = str(fund_code).zfill(6)
         manager_url = f'http://fund.eastmoney.com/f10/jjjl_{fund_code}.html'
         res = getURL(manager_url)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        manager_table = soup.find('table', class_='w780')
-        if not manager_table:
+        if not res:
             return np.nan
         
+        soup = BeautifulSoup(res.text, 'html.parser')
+        manager_table = soup.find('table', class_='w780') or soup.find('table', class_='tzjl')
+        
+        if not manager_table:
+            print(f"Could not find manager info table for {fund_code}.")
+            return np.nan
+            
         first_row = manager_table.find_all('tr')[1]
         term_cell = first_row.find_all('td')[3]
         term_text = term_cell.get_text().strip()
@@ -156,63 +167,82 @@ def get_fund_manager_info(fund_code):
         return manager_term
     
     except Exception as e:
-        print(f"获取基金经理信息失败: {e}")
+        print(f"Failed to get manager info for {fund_code}: {e}")
+        traceback.print_exc()
         return np.nan
 
 def get_fund_holdings_with_selenium(fund_code):
-    """通过 requests 获取基金持仓数据（替代 Selenium）"""
+    """
+    **FIXED:** This function now correctly targets the dynamic content
+    using the new `id='cctable'` selector and waits for the data to load.
+    """
+    fund_code = str(fund_code).zfill(6)
+    options = Options()
+    options.add_argument('--headless')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--no-sandbox')
+    options.add_argument(f'user-agent={randHeader()["User-Agent"]}')
+    
+    service = Service(ChromeDriverManager().install())
+    
+    driver = None
     try:
-        # 确保基金代码为六位
-        fund_code = str(fund_code).zfill(6)
+        driver = webdriver.Chrome(service=service, options=options)
         url = f'http://fundf10.eastmoney.com/ccmx_{fund_code}.html'
-        res = getURL(url)
-        if not res:
-            return {'concentration': np.nan, 'num_holdings': np.nan}
+        driver.get(url)
         
-        soup = BeautifulSoup(res.text, 'lxml')
-        holdings_table = soup.find('div', class_='fund_ccmx').find('table')
+        wait = WebDriverWait(driver, 30)
+        table_locator = (By.ID, 'cctable')
+        wait.until(EC.presence_of_element_located(table_locator))
+        
+        soup = BeautifulSoup(driver.page_source, 'lxml')
+        holdings_table_div = soup.find('div', id='cctable')
+        
+        if not holdings_table_div or '数据加载中' in holdings_table_div.get_text():
+            raise NoSuchElementException("Holdings table data did not load.")
+        
+        holdings_table = holdings_table_div.find('table')
         if not holdings_table:
-            print(f"调试: 基金 {fund_code} 持仓表格未找到，页面长度: {len(res.text)}")
-            return {'concentration': np.nan, 'num_holdings': np.nan}
+            raise NoSuchElementException("Unable to find the holdings table.")
+            
+        holdings_data = pd.read_html(StringIO(str(holdings_table)))[0]
         
-        holdings_data = pd.read_html(str(holdings_table))[0]
-        holdings_data.columns = ['排名', '代码', '名称', '最新价', '涨跌幅', '市值(万元)', '占净值比例', '持股数(万股)', '持仓市值(万元)']
+        # Rename columns to avoid key errors in subsequent steps
+        holdings_data.columns = ['Rank', 'StockCode', 'StockName', 'CurrentPrice', 'Change', 'MarketValue(10k)', 'NetValue%', 'Shares(10k)', 'HoldingValue(10k)']
+
+        holdings_data['NetValue%'] = pd.to_numeric(holdings_data['NetValue%'].str.strip('%'), errors='coerce')
         
-        holdings_data['占净值比例'] = holdings_data['占净值比例'].str.strip('%').astype(float)
-        
-        # 计算持仓集中度（前十大持股占比）
-        top_10_concentration = holdings_data['占净值比例'].sum()
-        
-        # 行业分散度（这里用持股数量作为简化指标，越多越分散）
+        top_10_concentration = holdings_data['NetValue%'].head(10).sum()
         num_holdings = len(holdings_data)
         
         return {'concentration': top_10_concentration, 'num_holdings': num_holdings}
     
-    except Exception as e:
-        print(f"在获取基金持仓数据时发生错误: {e}")
+    except (WebDriverException, TimeoutException, NoSuchElementException) as e:
+        print(f"Selenium error while getting fund holdings: {e}")
+        traceback.print_exc()
         return {'concentration': np.nan, 'num_holdings': np.nan}
+    except Exception as e:
+        print(f"An error occurred while getting fund holdings: {e}")
+        traceback.print_exc()
+        return {'concentration': np.nan, 'num_holdings': np.nan}
+    finally:
+        if driver:
+            driver.quit()
 
 def calculate_composite_score(df):
-    """根据你的偏好，计算综合评分并生成最终报告"""
-    print("开始进行量化评分...")
+    """Calculates the composite score for funds."""
+    print("Starting quantitative scoring...")
     
-    # 归一化所有关键指标到 [0, 1] 范围，以便进行加权计算
-    # 评分原则：越高越好
-    
-    # 1. 夏普比率：越高越好
+    df = df.dropna(subset=['sharpe_ratio', 'max_drawdown', 'manager_term', 'concentration'], how='all')
+    if df.empty:
+        print("No valid fund data to score.")
+        return pd.DataFrame()
+
     df['sharpe_score'] = (df['sharpe_ratio'] - df['sharpe_ratio'].min()) / (df['sharpe_ratio'].max() - df['sharpe_ratio'].min())
-    
-    # 2. 最大回撤：越小越好，因此需要反向归一化
     df['max_drawdown_score'] = 1 - (df['max_drawdown'] - df['max_drawdown'].min()) / (df['max_drawdown'].max() - df['max_drawdown'].min())
-    
-    # 3. 基金经理任职年限：越长越好
     df['manager_term_score'] = (df['manager_term'] - df['manager_term'].min()) / (df['manager_term'].max() - df['manager_term'].min())
-    
-    # 4. 持仓集中度：越低越好，需要反向归一化
     df['concentration_score'] = 1 - (df['concentration'] - df['concentration'].min()) / (df['concentration'].max() - df['concentration'].min())
     
-    # 根据你的偏好设置权重
-    # 示例权重：夏普比率(30%)，最大回撤(20%)，经理任职(20%)，持仓集中度(10%)，收益排名(20%)
     weights = {
         'sharpe_score': 0.30,
         'max_drawdown_score': 0.20,
@@ -220,7 +250,6 @@ def calculate_composite_score(df):
         'concentration_score': 0.10,
     }
 
-    # 如果存在收益排名数据，则添加排名得分，否则将权重调整为0
     if 'rank(1y)' in df.columns:
         df['ranking_score'] = 1 - (df['rank(1y)'] - df['rank(1y)'].min()) / (df['rank(1y)'].max() - df['rank(1y)'].min())
         weights['ranking_score'] = 0.20
@@ -231,16 +260,12 @@ def calculate_composite_score(df):
             'manager_term_score': 0.25,
             'concentration_score': 0.15,
         }
-        print("警告：缺少收益排名数据，已调整权重以补偿。")
+        print("Warning: Missing return ranking data. Weights adjusted to compensate.")
 
-    df['综合评分'] = 0
-    for col, weight in weights.items():
-        if col in df.columns:
-            df['综合评分'] += df[col] * weight
-        
+    df['综合评分'] = df.apply(lambda row: sum(row[col] * weight for col, weight in weights.items() if not pd.isna(row[col])), axis=1)
+    
     df = df.sort_values(by='综合评分', ascending=False)
     
-    # 仅保留关键列
     final_cols = [
         'fund_code', 'fund_name', '综合评分',
         'sharpe_ratio', 'max_drawdown',
@@ -251,28 +276,24 @@ def calculate_composite_score(df):
     return df[final_cols]
 
 def main():
-    """主函数，编排整个筛选流程"""
-    print("第一步：开始从 GitHub 获取基金列表...")
+    """Main function to orchestrate the entire process."""
+    print("Step 1: Starting to get fund list from GitHub...")
     df = get_initial_fund_list()
     if df.empty:
         return
 
-    # 准备一个空列表来存储所有基金的深度数据
     all_funds_data = []
 
-    # 深度处理前 20 只基金，避免耗时过长
     funds_to_process = df['fund_code'].head(20).tolist()
     
     for i, fund_code in enumerate(funds_to_process, 1):
         fund_name = df[df['fund_code'] == fund_code]['fund_name'].iloc[0]
-        print(f"\n[{i}/{len(funds_to_process)}] 正在深度分析基金：{fund_name} ({fund_code})...")
+        print(f"\n[{i}/{len(funds_to_process)}] Analyzing fund: {fund_name} ({fund_code})...")
         
-        # 获取所有深度数据
         details = get_fund_details(fund_code)
         manager_term = get_fund_manager_info(fund_code)
         holdings = get_fund_holdings_with_selenium(fund_code)
         
-        # 整合数据
         fund_data = {
             'fund_code': fund_code,
             'fund_name': fund_name,
@@ -282,28 +303,20 @@ def main():
         }
         all_funds_data.append(fund_data)
         
-    # 将深度数据转换为 DataFrame
     deep_data_df = pd.DataFrame(all_funds_data)
     
-    # 合并原始列表和深度数据
     final_df = df.merge(deep_data_df, on=['fund_code', 'fund_name'], how='left')
     
-    # 删除所有深度数据都为空的行（放宽：只要有经理年限就保留）
-    final_df = final_df.dropna(subset=['manager_term'])
-    print(f"调试: 过滤后剩余基金数量: {len(final_df)}")
-    
-    if final_df.empty:
-        print("\n未能获取任何基金的深度数据，无法进行评分。")
-        return
-        
-    # 计算综合评分
     final_report = calculate_composite_score(final_df)
     
-    # 保存最终报告
+    if final_report.empty:
+        print("\nFailed to get deep data for any funds; unable to score.")
+        return
+        
     report_path = 'advanced_fund_report.csv'
     final_report.to_csv(report_path, encoding='gbk', index=False)
-    print(f"\n最终推荐基金报告已生成并保存至 '{report_path}'")
-    print("请打开该文件以查看按综合评分排序的基金列表。")
+    print(f"\nFinal report saved to '{report_path}'.")
+    print("Open the file to see the ranked fund list.")
 
 if __name__ == '__main__':
     main()

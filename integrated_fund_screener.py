@@ -207,6 +207,8 @@ def get_fund_basic_info():
 def get_fund_data(code, sdate='', edate='', proxies=None):
     """获取历史净值，优化分页和备选 akshare"""
     url = f'https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=65535&sdate={sdate}&edate={edate}'
+    
+    # 尝试从天天基金网获取数据
     try:
         response = getURL(url, proxies=proxies)
         content_match = re.search(r'content:"(.*?)"', response.text)
@@ -246,17 +248,26 @@ def get_fund_data(code, sdate='', edate='', proxies=None):
         return df
     except Exception as e:
         print(f"lxml 解析失败 ({e})，尝试 akshare...")
-        try:
-            df = ak.fund_em_open_fund_daily(fund=code)
-            if df.empty:
-                raise ValueError("akshare 数据为空")
-            df['净值日期'] = pd.to_datetime(df['净值日期'], format='mixed', errors='coerce')
-            df = df[(df['净值日期'] >= sdate) & (df['净值日期'] <= edate)]
-            print(f"akshare 获取 {code} 的 {len(df)} 条净值数据")
-            return df
-        except Exception as e:
-            print(f"akshare 解析失败: {e}")
-            return pd.DataFrame()
+        
+    # 如果天天基金网失败，则回退到 akshare
+    try:
+        df = ak.fund_em_open_fund_info(fund=code, indicator="单位净值走势")
+        if df.empty:
+            raise ValueError("akshare 数据为空")
+        
+        df.columns = ['净值日期', '单位净值', '累计净值']
+        df['净值日期'] = pd.to_datetime(df['净值日期'])
+        df['单位净值'] = pd.to_numeric(df['单位净值'])
+        df['累计净值'] = pd.to_numeric(df['累计净值'])
+        
+        df = df[(df['净值日期'] >= pd.to_datetime(sdate)) & (df['净值日期'] <= pd.to_datetime(edate))]
+        df = df.dropna(subset=['净值日期', '单位净值'])
+
+        print(f"akshare 获取 {code} 的 {len(df)} 条净值数据")
+        return df
+    except Exception as e:
+        print(f"akshare 解析失败: {e}")
+        return pd.DataFrame()
 
 def get_fund_managers(fund_code):
     """获取基金经理数据，优化筛选逻辑"""
@@ -304,13 +315,14 @@ def get_fund_holdings_with_selenium(fund_code):
     
     # 尝试使用系统已安装的 ChromeDriver，如果失败则回退到 webdriver-manager
     try:
-        # Check if a custom path for chromedriver exists
         driver_path = '/usr/lib/chromium-browser/chromedriver'
         if not os.path.exists(driver_path):
+            print("系统未找到 ChromeDriver，尝试通过 webdriver-manager 下载...")
             driver_path = ChromeDriverManager().install()
         service = Service(driver_path)
     except Exception as e:
         print(f"无法安装或找到 ChromeDriver: {e}")
+        traceback.print_exc()
         return []
 
     driver = None
@@ -386,6 +398,9 @@ def analyze_fund(fund_code, start_date, end_date):
     """分析基金风险指标"""
     try:
         df = get_fund_data(fund_code, sdate=start_date, edate=end_date)
+        if df.empty or '单位净值' not in df.columns:
+            return {"error": "没有足够的回报数据进行分析"}
+
         returns = df['单位净值'].pct_change().dropna()
         if returns.empty:
             return {"error": "没有足够的回报数据进行分析"}

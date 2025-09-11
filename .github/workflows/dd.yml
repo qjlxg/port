@@ -38,7 +38,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
           pip install --upgrade pip
-          pip install pandas requests beautifulsoup4 lxml selenium webdriver-manager numpy
+          pip install pandas requests beautifulsoup4 lxml selenium webdriver-manager
 
       - name: Run Python script
         run: python advanced_fund_screener.py

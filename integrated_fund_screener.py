@@ -85,13 +85,11 @@ def get_fund_rankings(fund_type='hh', proxies=None):
             if not response:
                 raise ValueError("无法获取响应")
             
-            # Use regex to extract the JSON-like content
             match = re.search(r'var rankData = (\{.*?\});', response.text, re.DOTALL)
             if not match:
                 print(f"无法从 {period} 排名响应中提取 JSON 数据")
                 continue
             
-            # Fix unquoted keys and then parse
             json_str = match.group(1)
             json_str = re.sub(r'(\w+):', r'"\1":', json_str)
             
@@ -113,8 +111,8 @@ def get_fund_rankings(fund_type='hh', proxies=None):
             
     if all_data:
         df_final = all_data[0]
-        for df in all_data[1:]:
-            df_final = df_final.join(df, how='inner')
+        for i, df in enumerate(all_data[1:]):
+            df_final = df_final.join(df.drop('name', axis=1), how='inner')
         df_final.to_csv('fund_rankings.csv', encoding='gbk')
         print(f"排名数据已保存至 'fund_rankings.csv'")
         return df_final

@@ -50,69 +50,81 @@ def getURL(url, tries_num=5, sleep_time=1, time_out=10, proxies=None):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Request to {url} failed, maximum retries reached.")
     return None
 
-def get_fund_name(fund_code):
-    """Helper function to get the fund name from Eastmoney."""
-    try:
-        fund_code = str(fund_code).zfill(6)
-        url = f'http://fund.eastmoney.com/{fund_code}.html'
-        res = getURL(url)
-        if not res:
-            return 'Unknown Fund'
-        soup = BeautifulSoup(res.text, 'html.parser')
-        title_elem = soup.find('div', class_='fundDetail-tit') or soup.find('div', class_='fund-title')
-        if title_elem:
-            name = title_elem.find('h1').get_text().strip().split('(')[0].strip()
-            return name
-        return 'Unknown Fund'
-    except Exception as e:
-        print(f"Failed to get fund name for {fund_code}: {e}")
-        return 'Unknown Fund'
+def get_fund_rankings(fund_type='hh', start_date='2018-09-11', end_date='2025-09-11', proxies=None):
+    """Fetches fund rankings and returns a filtered DataFrame."""
+    all_data = []
+    
+    # Define ranking periods for the 4433 rule
+    periods = {
+        '3y': (start_date, end_date),
+        '2y': (f"{int(end_date[:4])-2}{end_date[4:]}", end_date),
+        '1y': (f"{int(end_date[:4])-1}{end_date[4:]}", end_date),
+        '6m': (f"{int(end_date[:4])-(1 if int(end_date[5:7])<=6 else 0)}-{int(end_date[5:7])-6:02d}{end_date[7:]}", end_date),
+        '3m': (f"{int(end_date[:4])-(1 if int(end_date[5:7])<=3 else 0)}-{int(end_date[5:7])-3:02d}{end_date[7:]}", end_date)
+    }
+    
+    for period, (sd, ed) in periods.items():
+        url = f'http://fund.eastmoney.com/data/rankhandler.aspx?op=dy&dt=kf&ft={fund_type}&rs=&gs=0&sc=qjzf&st=desc&sd={sd}&ed={ed}&es=1&qdii=&pi=1&pn=10000&dx=1'
+        try:
+            response = getURL(url, proxies=proxies)
+            if not response:
+                raise ValueError("Could not get response.")
+            content = response.text
+            content = re.sub(r'var rankData\s*=\s*({.*?});?', r'\1', content)
+            content = re.sub(r'([,{])(\w+):', r'\1"\2":', content)
+            content = content.replace('\'', '"')
+            data = json.loads(content)
+            records = data['datas']
+            total = int(data['allRecords'])
+            
+            df = pd.DataFrame([r.split(',') for r in records])
+            df = df[[0, 1, 3]].rename(columns={0: 'code', 1: 'name', 3: f'rose({period})'})
+            df[f'rose({period})'] = pd.to_numeric(df[f'rose({period})'].str.replace('%', ''), errors='coerce') / 100
+            df[f'rank({period})'] = range(1, len(df) + 1)
+            df[f'rank_r({period})'] = df[f'rank({period})'] / total
+            df.set_index('code', inplace=True)
+            all_data.append(df)
+            print(f"Successfully fetched {period} rankings: {len(df)} records (total {total})")
+        except Exception as e:
+            print(f"Failed to get {period} rankings: {e}")
+            all_data.append(pd.DataFrame())
 
-def get_initial_fund_list():
-    """Reads fund codes from a GitHub CSV and fetches their names."""
-    url = 'https://raw.githubusercontent.com/qjlxg/rep/refs/heads/main/fund_rankings.csv'
-    try:
-        df = pd.read_csv(url)
-        print(f"Successfully fetched data from {url}. Columns: {df.columns.tolist()}")
-        
-        if 'code' in df.columns:
-            df = df.rename(columns={'code': 'fund_code'})
-        else:
-            raise ValueError("CSV is missing the 'code' column.")
-        
-        df['fund_code'] = df['fund_code'].astype(str).str.zfill(6)
-        df['fund_name'] = ''
-        
-        funds_to_name = df['fund_code'].head(20).tolist()
-        for fund_code in funds_to_name:
-            name = get_fund_name(fund_code)
-            df.loc[df['fund_code'] == fund_code, 'fund_name'] = name
-            time.sleep(random.uniform(0.5, 1.5))
-        
-        df = df[['fund_code', 'fund_name', 'rank(1y)']].dropna(subset=['fund_code'])
-        print(f"Successfully filtered and named {len(df)} funds.")
-        return df
-    except Exception as e:
-        print(f"Failed to get initial fund list from GitHub: {e}")
+    if not all_data or all(df.empty for df in all_data):
+        print("All ranking data fetching failed.")
         return pd.DataFrame()
+
+    # Merge all ranking data
+    merged_df = all_data[0].copy()
+    for df in all_data[1:]:
+        if not df.empty:
+            merged_df = merged_df.join(df, how='outer')
+    
+    # Apply the 4433 rule
+    rule_thresholds = {'3y': 0.25, '2y': 0.25, '1y': 0.25, '6m': 1/3, '3m': 1/3}
+    filtered_df = merged_df.copy()
+    for period, threshold in rule_thresholds.items():
+        rank_col = f'rank_r({period})'
+        if rank_col in filtered_df.columns:
+            filtered_df = filtered_df[filtered_df[rank_col] <= threshold]
+            
+    print(f"4433 rule filtered down to {len(filtered_df)} funds.")
+    
+    return filtered_df.reset_index().rename(columns={'index': 'fund_code', 'name': 'fund_name'})
 
 def get_fund_details(fund_code):
     """
-    **FIXED:** This function now uses a more robust approach to find
-    and parse tables, making it resistant to minor website structure changes.
-    It no longer relies on hardcoded table indices.
+    **FIXED**: This function now uses a robust method to find and parse
+    the risk metrics tables, no longer relying on fixed table indices.
     """
     try:
         fund_code = str(fund_code).zfill(6)
-        url_main = f'http://fund.eastmoney.com/f10/{fund_code}.html'
         url_risk = f'http://fund.eastmoney.com/f10/tsdata_{fund_code}.html'
         
-        # Parse risk data from tsdata page
         res_risk = getURL(url_risk)
         if not res_risk:
             raise Exception("Request failed, unable to get risk data.")
 
-        # Use StringIO to suppress the FutureWarning
+        # Use StringIO to handle text as a file for pandas
         risk_tables = pd.read_html(StringIO(res_risk.text))
         
         sharpe_ratio = np.nan
@@ -121,12 +133,12 @@ def get_fund_details(fund_code):
         # Search for tables by keyword
         for table in risk_tables:
             if '夏普比率' in table.iloc[:, 0].values:
-                sharpe_ratio = pd.to_numeric(table.loc[0, '近1年'], errors='coerce')
+                sharpe_ratio = pd.to_numeric(table.loc[table.iloc[:, 0] == '夏普比率', '近1年'].iloc[0], errors='coerce')
             if '最大回撤' in table.iloc[:, 0].values:
-                max_drawdown = pd.to_numeric(table.loc[0, '近1年'], errors='coerce')
+                max_drawdown = pd.to_numeric(table.loc[table.iloc[:, 0] == '最大回撤', '近1年'].iloc[0], errors='coerce')
 
         if pd.isna(sharpe_ratio) or pd.isna(max_drawdown):
-            raise ValueError("Could not find required risk metrics tables.")
+            raise ValueError("Could not find required risk metrics in the tables.")
         
         return {
             'sharpe_ratio': sharpe_ratio,
@@ -142,7 +154,7 @@ def get_fund_details(fund_code):
 
 def get_fund_manager_info(fund_code):
     """
-    **FIXED:** This function now correctly handles the manager's term data
+    **FIXED**: This function now correctly handles the manager's term data
     by locating the correct table and extracting the text.
     """
     try:
@@ -153,7 +165,7 @@ def get_fund_manager_info(fund_code):
             return np.nan
         
         soup = BeautifulSoup(res.text, 'html.parser')
-        manager_table = soup.find('table', class_='w780') or soup.find('table', class_='tzjl')
+        manager_table = soup.find('table', class_='tzjl') or soup.find('table', class_='w780')
         
         if not manager_table:
             print(f"Could not find manager info table for {fund_code}.")
@@ -173,8 +185,8 @@ def get_fund_manager_info(fund_code):
 
 def get_fund_holdings_with_selenium(fund_code):
     """
-    **FIXED:** This function now correctly targets the dynamic content
-    using the new `id='cctable'` selector and waits for the data to load.
+    **FIXED**: This function correctly targets the dynamic content
+    using the new id='cctable' selector and waits for the data to load.
     """
     fund_code = str(fund_code).zfill(6)
     options = Options()
@@ -270,24 +282,32 @@ def calculate_composite_score(df):
         'fund_code', 'fund_name', '综合评分',
         'sharpe_ratio', 'max_drawdown',
         'manager_term',
-        'concentration'
+        'concentration',
+        'num_holdings'
     ]
     
     return df[final_cols]
 
 def main():
     """Main function to orchestrate the entire process."""
-    print("Step 1: Starting to get fund list from GitHub...")
-    df = get_initial_fund_list()
-    if df.empty:
+    print("Step 1: Starting to get fund rankings and apply 4433 rule...")
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = (datetime.now() - pd.DateOffset(years=3)).strftime('%Y-%m-%d')
+    
+    # Get rankings and filter, the logic is now self-contained in get_fund_rankings
+    filtered_df = get_fund_rankings(fund_type='hh', start_date=start_date, end_date=end_date)
+    
+    if filtered_df.empty:
+        print("\nFailed to get rankings or no funds passed the 4433 filter. Exiting.")
         return
 
+    # Process only the top 50 ranked funds for efficiency
+    funds_to_process = filtered_df.head(50).to_dict('records')
     all_funds_data = []
 
-    funds_to_process = df['fund_code'].head(20).tolist()
-    
-    for i, fund_code in enumerate(funds_to_process, 1):
-        fund_name = df[df['fund_code'] == fund_code]['fund_name'].iloc[0]
+    for i, fund in enumerate(funds_to_process, 1):
+        fund_code = fund['fund_code']
+        fund_name = fund['fund_name']
         print(f"\n[{i}/{len(funds_to_process)}] Analyzing fund: {fund_name} ({fund_code})...")
         
         details = get_fund_details(fund_code)
@@ -305,7 +325,7 @@ def main():
         
     deep_data_df = pd.DataFrame(all_funds_data)
     
-    final_df = df.merge(deep_data_df, on=['fund_code', 'fund_name'], how='left')
+    final_df = filtered_df.merge(deep_data_df, on=['fund_code', 'fund_name'], how='left')
     
     final_report = calculate_composite_score(final_df)
     

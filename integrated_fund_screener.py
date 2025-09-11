@@ -287,36 +287,11 @@ def get_fund_basic_info():
 
 def get_fund_data(code, sdate='', edate='', proxies=None):
     """获取历史净值，优化分页和备选 akshare"""
-    url = f'https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=65535&sdate={sdate}&edate={edate}'
     try:
-        response = getURL(url, proxies=proxies)
-        # 从 JSONP 格式中提取 HTML 内容
-        content_match = re.search(r'content:"(.*?)"', response.text)
-        if not content_match:
-            raise ValueError("未找到净值表格内容")
-        html_content = content_match.group(1).encode('utf-8').decode('unicode_escape')
-        tree = etree.HTML(html_content)
-        rows = tree.xpath("//tbody/tr")
-        if not rows:
-            raise ValueError("未找到净值表格")
-        
-        data = []
-        for row in rows:
-            cols = row.xpath("./td/text()")
-            if len(cols) >= 7:
-                data.append({
-                    '净值日期': cols[0].strip(),
-                    '单位净值': cols[1].strip(),
-                    '累计净值': cols[2].strip(),
-                    '日增长率': cols[3].strip(),
-                    '申购状态': cols[4].strip(),
-                    '赎回状态': cols[5].strip(),
-                    '分红送配': cols[6].strip()
-                })
-        
-        df = pd.DataFrame(data)
-        if df.empty:
-            raise ValueError("解析数据为空")
+        # 尝试使用 akshare 高效接口
+        print(f"尝试使用 akshare 获取 {code} 的历史净值...")
+        df = ak.fund_em_open_fund_info(fund=code, start_date=sdate, end_date=edate)
+        df.rename(columns={'净值日期': '净值日期', '单位净值': '单位净值', '累计净值': '累计净值', '日增长率': '日增长率'}, inplace=True)
         
         # 数据清洗
         df['净值日期'] = pd.to_datetime(df['净值日期'], format='mixed', errors='coerce')
@@ -324,27 +299,55 @@ def get_fund_data(code, sdate='', edate='', proxies=None):
         df['累计净值'] = pd.to_numeric(df['累计净值'], errors='coerce')
         df['日增长率'] = pd.to_numeric(df['日增长率'].str.strip('%'), errors='coerce') / 100
         df = df.dropna(subset=['净值日期', '单位净值'])
-        df = df[(df['净值日期'] >= sdate) & (df['净值日期'] <= edate)] if sdate and edate else df
         
         print(f"成功获取 {code} 的 {len(df)} 条净值数据")
         return df
     except Exception as e:
-        print(f"lxml 解析失败 ({e})，尝试 akshare...")
+        print(f"akshare 获取 {code} 历史净值失败: {e}")
+        print("尝试回退到网页爬取...")
+        url = f'https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code={code}&page=1&per=65535&sdate={sdate}&edate={edate}'
         try:
-            # 修复：用正确接口 ak.fund_open_fund_daily_em (全量日净值，过滤code)
-            full_df = ak.fund_open_fund_daily_em()
-            df = full_df[full_df['基金代码'] == code]
+            response = getURL(url, proxies=proxies)
+            # 从 JSONP 格式中提取 HTML 内容
+            content_match = re.search(r'content:"(.*?)"', response.text)
+            if not content_match:
+                raise ValueError("未找到净值表格内容")
+            html_content = content_match.group(1).encode('utf-8').decode('unicode_escape')
+            tree = etree.HTML(html_content)
+            rows = tree.xpath("//tbody/tr")
+            if not rows:
+                raise ValueError("未找到净值表格")
+            
+            data = []
+            for row in rows:
+                cols = row.xpath("./td/text()")
+                if len(cols) >= 7:
+                    data.append({
+                        '净值日期': cols[0].strip(),
+                        '单位净值': cols[1].strip(),
+                        '累计净值': cols[2].strip(),
+                        '日增长率': cols[3].strip(),
+                        '申购状态': cols[4].strip(),
+                        '赎回状态': cols[5].strip(),
+                        '分红送配': cols[6].strip()
+                    })
+            
+            df = pd.DataFrame(data)
             if df.empty:
-                raise ValueError("akshare 数据为空")
+                raise ValueError("解析数据为空")
+            
+            # 数据清洗
             df['净值日期'] = pd.to_datetime(df['净值日期'], format='mixed', errors='coerce')
-            df = df[(df['净值日期'] >= sdate) & (df['净值日期'] <= edate)] if sdate and edate else df
             df['单位净值'] = pd.to_numeric(df['单位净值'], errors='coerce')
-            df['累计净值'] = pd.to_numeric(df.get('累计净值', df['单位净值']), errors='coerce')
-            df['日增长率'] = pd.to_numeric(df.get('日增长率', 0), errors='coerce')
-            print(f"akshare 获取 {code} 的 {len(df)} 条净值数据")
+            df['累计净值'] = pd.to_numeric(df['累计净值'], errors='coerce')
+            df['日增长率'] = pd.to_numeric(df['日增长率'].str.strip('%'), errors='coerce') / 100
+            df = df.dropna(subset=['净值日期', '单位净值'])
+            df = df[(df['净值日期'] >= sdate) & (df['净值日期'] <= edate)] if sdate and edate else df
+            
+            print(f"成功获取 {code} 的 {len(df)} 条净值数据")
             return df
         except Exception as e:
-            print(f"akshare 解析失败: {e}")
+            print(f"回退到网页爬取也失败了: {e}")
             return pd.DataFrame()
 
 def get_fund_managers(fund_code, proxies=None):

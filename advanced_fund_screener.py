@@ -56,8 +56,8 @@ def get_initial_fund_list():
         df = pd.read_csv(url)
         print(f"成功从 {url} 获取数据。当前列名: {df.columns.tolist()}")
         
-        # 直接指定列名为 'code' 和 '名称'
-        df = df[['code', '名称']]
+        # 修正列名，直接指定为 '代码' 和 '名称'
+        df = df[['代码', '名称']]
         df.columns = ['fund_code', 'fund_name']
         
         df = df.dropna()

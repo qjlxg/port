@@ -1,0 +1,60 @@
+name: Extract and Save Fund Holdings and Analysis
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 0 * * *'  # 每天运行一次
+  workflow_dispatch:
+
+jobs:
+  extract-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install selenium webdriver-manager pandas requests beautifulsoup4 numpy yfinance matplotlib seaborn lxml openpyxl akshare plotly tqdm concurrent-futures requests-retry urllib3
+
+      - name: Install ChromeDriver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chromium-chromedriver
+
+      - name: Run the data extraction and analysis script
+        run: python integrated_fund_screener.py
+
+      - name: Commit and push the new data and analysis files
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          files=(
+            "all_fund_basic_info.xlsx"
+            "all_fund_codes.csv"
+            "selected_funds.csv"
+            "fund_plot_*.html"
+            "fund_return_hist_*.png"
+            "fund_analysis_*.json"
+            "final_detailed_screener_results.csv"
+          )
+          
+          for file in "${files[@]}"; do
+            if ls $file 2>/dev/null; then
+              git add $file
+              git commit -m "Automated: Save $file" || echo "No changes to $file"
+            else
+              echo "未找到 $file"
+            fi
+          done
+          
+          git push

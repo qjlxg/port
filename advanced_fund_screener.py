@@ -54,10 +54,14 @@ def get_initial_fund_list():
     url = 'https://raw.githubusercontent.com/qjlxg/rep/refs/heads/main/fund_rankings.csv'
     try:
         df = pd.read_csv(url)
+        print(f"成功从 {url} 获取数据。当前列名: {df.columns.tolist()}")
+        
+        # 直接指定列名，避免猜测
         df = df[['代码', '名称']]
-        df = df.dropna()
         df.columns = ['fund_code', 'fund_name']
-        print(f"成功从 GitHub 获取 {len(df)} 只基金")
+        
+        df = df.dropna()
+        print(f"成功筛选出 {len(df)} 只基金。")
         return df
     except Exception as e:
         print(f"从 GitHub 获取基金列表失败: {e}")
@@ -189,11 +193,6 @@ def calculate_composite_score(df):
     # 4. 持仓集中度：越低越好，需要反向归一化
     df['concentration_score'] = 1 - (df['concentration'] - df['concentration'].min()) / (df['concentration'].max() - df['concentration'].min())
     
-    # 5. 收益排名：你提供的数据已经是排名靠前的，这里将其作为基础分
-    # 原始数据中没有 rank_r 列，这里假设 rank_r(1y) 越小越好
-    # 注意：如果你的 CSV 中没有这个列，会报错，请确保 CSV 列名正确
-    df['ranking_score'] = 1 - (df['rank(1y)'] - df['rank(1y)'].min()) / (df['rank(1y)'].max() - df['rank(1y)'].min())
-
     # 根据你的偏好设置权重
     # 示例权重：夏普比率(30%)，最大回撤(20%)，经理任职(20%)，持仓集中度(10%)，收益排名(20%)
     weights = {
@@ -201,12 +200,25 @@ def calculate_composite_score(df):
         'max_drawdown_score': 0.20,
         'manager_term_score': 0.20,
         'concentration_score': 0.10,
-        'ranking_score': 0.20
     }
-    
+
+    # 如果存在收益排名数据，则添加排名得分，否则将权重调整为0
+    if 'rank(1y)' in df.columns:
+        df['ranking_score'] = 1 - (df['rank(1y)'] - df['rank(1y)'].min()) / (df['rank(1y)'].max() - df['rank(1y)'].min())
+        weights['ranking_score'] = 0.20
+    else:
+        weights = {
+            'sharpe_score': 0.35,
+            'max_drawdown_score': 0.25,
+            'manager_term_score': 0.25,
+            'concentration_score': 0.15,
+        }
+        print("警告：缺少收益排名数据，已调整权重以补偿。")
+
     df['综合评分'] = 0
     for col, weight in weights.items():
-        df['综合评分'] += df[col] * weight
+        if col in df.columns:
+            df['综合评分'] += df[col] * weight
         
     df = df.sort_values(by='综合评分', ascending=False)
     

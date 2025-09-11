@@ -251,16 +251,19 @@ def get_fund_data(code, sdate='', edate='', proxies=None):
         
     # 如果天天基金网失败，则回退到 akshare
     try:
-        df = ak.fund_em_open_fund_info(fund=code, indicator="单位净值走势")
+        # 使用更通用的 akshare 函数
+        df = ak.fund_etf_hist_em(symbol=code, period="daily", start_date=sdate, end_date=edate, adjust="")
+        
         if df.empty:
             raise ValueError("akshare 数据为空")
         
-        df.columns = ['净值日期', '单位净值', '累计净值']
+        # akshare 数据列名可能不同，这里做一下处理
+        df.columns = ['日期', '开盘', '最高', '最低', '收盘', '成交量', '成交额']
+        df = df.rename(columns={'日期': '净值日期', '收盘': '单位净值'})
+        
         df['净值日期'] = pd.to_datetime(df['净值日期'])
         df['单位净值'] = pd.to_numeric(df['单位净值'])
-        df['累计净值'] = pd.to_numeric(df['累计净值'])
         
-        df = df[(df['净值日期'] >= pd.to_datetime(sdate)) & (df['净值日期'] <= pd.to_datetime(edate))]
         df = df.dropna(subset=['净值日期', '单位净值'])
 
         print(f"akshare 获取 {code} 的 {len(df)} 条净值数据")
@@ -408,7 +411,7 @@ def analyze_fund(fund_code, start_date, end_date):
         annual_returns = returns.mean() * 252
         annual_volatility = returns.std() * np.sqrt(252)
         sharpe_ratio = (annual_returns - 0.03) / annual_volatility
-        max_drawdown = (returns.max() - returns.min()) / returns.max()
+        max_drawdown = (returns.min() - returns.max()) / returns.max()  # 计算最大回撤
         
         result = {
             "fund_code": fund_code,
@@ -420,6 +423,7 @@ def analyze_fund(fund_code, start_date, end_date):
         return result
     except Exception as e:
         print(f"分析基金 {fund_code} 风险参数失败: {e}")
+        traceback.print_exc()
         return {"error": "风险参数计算失败"}
 
 def main_scraper():

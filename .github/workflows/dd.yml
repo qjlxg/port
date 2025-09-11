@@ -3,6 +3,12 @@ name: Advanced Fund Screener
 on:
   schedule:
     - cron: '0 12 * * SUN' # Runs every Sunday at 12:00 PM UTC
+  push:
+    branches:
+      - main
+    paths:
+      - 'advanced_fund_screener.py'
+      - '.github/workflows/fund_screener_workflow.yml'
   workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
 
 jobs:

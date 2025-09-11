@@ -38,7 +38,7 @@ def getURL(url, tries_num=5, sleep_time=1, time_out=10, proxies=None):
     """增强型 requests，带重试机制和随机延时"""
     for i in range(tries_num):
         try:
-            time.sleep(random.uniform(0.5, sleep_time))  # 随机延时
+            time.sleep(random.uniform(0.5, sleep_time))
             res = requests.get(url, headers=randHeader(), timeout=time_out, proxies=proxies)
             res.raise_for_status()
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 成功获取 {url}")
@@ -84,10 +84,18 @@ def get_fund_rankings(fund_type='hh', proxies=None):
             response = getURL(url, proxies=proxies)
             if not response:
                 raise ValueError("无法获取响应")
-            content = response.text
-            content = content[15:-1]
-            content = content.replace('datas', '"datas"').replace('allRecords', '"allRecords"')
-            data = json.loads(f"{{{content}}}")
+            
+            # Use regex to extract the JSON-like content
+            match = re.search(r'var rankData = (\{.*?\});', response.text, re.DOTALL)
+            if not match:
+                print(f"无法从 {period} 排名响应中提取 JSON 数据")
+                continue
+            
+            # Fix unquoted keys and then parse
+            json_str = match.group(1)
+            json_str = re.sub(r'(\w+):', r'"\1":', json_str)
+            
+            data = json.loads(json_str)
             records = data['datas']
             total = int(data['allRecords'])
             
@@ -101,11 +109,12 @@ def get_fund_rankings(fund_type='hh', proxies=None):
             print(f"获取 {period} 排名数据：{len(df)} 条（总计 {total}）")
         except Exception as e:
             print(f"获取 {period} 排名失败: {e}")
-    
+            traceback.print_exc()
+            
     if all_data:
         df_final = all_data[0]
         for df in all_data[1:]:
-            df_final = df_final.join(df, how='inner', lsuffix=f'_{all_data.index(df)}', rsuffix=f'_{all_data.index(df)}')
+            df_final = df_final.join(df, how='inner')
         df_final.to_csv('fund_rankings.csv', encoding='gbk')
         print(f"排名数据已保存至 'fund_rankings.csv'")
         return df_final
@@ -229,7 +238,6 @@ def get_fund_data(code, sdate='', edate='', proxies=None):
         if df.empty:
             raise ValueError("解析数据为空")
         
-        # 数据清洗
         df['净值日期'] = pd.to_datetime(df['净值日期'], format='mixed', errors='coerce')
         df['单位净值'] = pd.to_numeric(df['单位净值'], errors='coerce')
         df['累计净值'] = pd.to_numeric(df['累计净值'], errors='coerce')

@@ -52,6 +52,8 @@ def getURL(url, tries_num=5, sleep_time=1, time_out=10, proxies=None):
 def get_fund_name(fund_code):
     """辅助函数：从东方财富网获取基金名称"""
     try:
+        # 确保基金代码为六位
+        fund_code = str(fund_code).zfill(6)
         url = f'http://fund.eastmoney.com/{fund_code}.html'
         res = getURL(url)
         if not res:
@@ -79,6 +81,9 @@ def get_initial_fund_list():
         else:
             raise ValueError("CSV 中缺少 'code' 列")
         
+        # 补齐基金代码为六位
+        df['fund_code'] = df['fund_code'].astype(str).str.zfill(6)
+        
         # 添加 fund_name 列（初始为空）
         df['fund_name'] = ''
         
@@ -100,6 +105,8 @@ def get_initial_fund_list():
 def get_fund_details(fund_code):
     """获取基金基本信息、夏普比率和最大回撤"""
     try:
+        # 确保基金代码为六位
+        fund_code = str(fund_code).zfill(6)
         url = f'http://fund.eastmoney.com/f10/{fund_code}.html'
         tables = pd.read_html(url)
         if len(tables) < 2:
@@ -138,6 +145,8 @@ def get_fund_details(fund_code):
 def get_fund_manager_info(fund_code):
     """获取基金经理的任职年限"""
     try:
+        # 确保基金代码为六位
+        fund_code = str(fund_code).zfill(6)
         manager_url = f'http://fund.eastmoney.com/f10/jjjl_{fund_code}.html'
         res = getURL(manager_url)
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -159,6 +168,8 @@ def get_fund_manager_info(fund_code):
 
 def get_fund_holdings_with_selenium(fund_code):
     """通过 Selenium 获取基金持仓数据"""
+    # 确保基金代码为六位
+    fund_code = str(fund_code).zfill(6)
     options = Options()
     options.add_argument('--headless')
     options.add_argument('--disable-gpu')

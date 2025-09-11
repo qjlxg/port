@@ -23,18 +23,21 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install selenium webdriver-manager pandas requests beautifulsoup4 numpy yfinance matplotlib seaborn lxml openpyxl akshare plotly tqdm requests-retry urllib3 playwright
+          pip install selenium webdriver-manager pandas requests beautifulsoup4 numpy yfinance matplotlib seaborn lxml pymysql openpyxl akshare plotly pymongo
+          pip install playwright
+          python -m playwright install
 
-      - name: Install Playwright
-        run: playwright install chromium
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('package.json') }}
+      - name: Install ChromeDriver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y chromium-chromedriver
 
       - name: Run the data extraction and analysis script
+        env:
+          MYSQL_HOST: ${{ secrets.MYSQL_HOST }}
+          MYSQL_USER: ${{ secrets.MYSQL_USER }}
+          MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+          MONGO_URI: ${{ secrets.MONGO_URI }}
         run: python integrated_fund_screener.py
 
       - name: Commit and push the new data and analysis files
@@ -43,13 +46,21 @@ jobs:
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           
           files=(
-            "all_fund_basic_info.xlsx"
-            "all_fund_codes.csv"
-            "selected_funds.csv"
-            "fund_plot_*.html"
+            "fund_holdings.json"
+            "fund_analysis.json"
+            "fund_basic_info.xlsx"
+            "fund_basic_info.csv"
             "fund_return_hist_*.png"
-            "fund_analysis_*.json"
-            "final_detailed_screener_results.csv"
+            "all_fund_codes.csv"
+            "risk_metrics.json"
+            "fund_managers_*.json"
+            "fund_codes.csv"
+            "fund_rankings.csv"
+            "selected_funds.csv"
+            "valuation_*.json"
+            "manager_index_screened_funds.csv"
+            "fund_plot_*.html"
+            "recommended_cn_funds.csv"
           )
           
           for file in "${files[@]}"; do
@@ -57,8 +68,6 @@ jobs:
               git add $file
               git commit -m "Automated: Save $file" || echo "No changes to $file"
             else
-              echo "未找到 $file"
+              echo "未找到..."
             fi
           done
-          
-          git push

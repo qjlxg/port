@@ -28,7 +28,7 @@ MAX_FEE = 2.5  # 管理费 ≤ 2.5%
 RISK_FREE_RATE = 3.0  # 无风险利率 3%
 MIN_DAYS = 100  # 最低数据天数
 TIMEOUT = 10  # 网络请求超时时间（秒）
-FUND_TYPE_FILTER = ['混合型', '股票型']  # 基金类型筛选，这里为了示例只保留混合型和股票型
+FUND_TYPE_FILTER = ['混合型', '股票型', '指数型']  # 基金类型筛选
 
 # 配置 requests 重试机制
 session = requests.Session()
@@ -65,10 +65,8 @@ SW_INDUSTRY_MAPPING = {
 CACHE_DIR = "fund_data_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-
 def get_all_funds_from_eastmoney():
     """从东方财富网获取所有基金列表"""
-    print(">>> 步骤1: 正在动态获取全市场基金列表...", flush=True)
     cache_file = os.path.join(CACHE_DIR, "fund_list.pkl")
     if os.path.exists(cache_file):
         try:
@@ -79,6 +77,7 @@ def get_all_funds_from_eastmoney():
         except Exception as e:
             print(f"    × 加载基金列表缓存失败: {e}，将重新获取。", flush=True)
 
+    print(">>> 步骤1: 正在动态获取全市场基金列表...", flush=True)
     url = "http://fund.eastmoney.com/js/fundcode_search.js"
     headers = {
         'User-Agent': random.choice(USER_AGENTS),
@@ -96,7 +95,6 @@ def get_all_funds_from_eastmoney():
             df = pd.DataFrame(fund_data, columns=['基金代码', '拼音', '名称', '类型', '全拼'])
             df = df[['基金代码', '名称', '类型']].drop_duplicates(subset=['基金代码'])
             df = df[df['类型'].isin(FUND_TYPE_FILTER)].copy()
-            df = df.reset_index(drop=True)
             print(f"    √ 获取到 {len(df)} 只{', '.join(FUND_TYPE_FILTER)}基金。", flush=True)
             with open(cache_file, "wb") as f:
                 pickle.dump(df, f)
@@ -110,105 +108,38 @@ def get_all_funds_from_eastmoney():
         print(f"    × 解析基金列表时发生异常: {e}", flush=True)
         return pd.DataFrame()
 
-def get_fund_rankings(start_date, end_date, fund_type):
-    """
-    获取指定时间段和类型的基金排名数据。
-    返回一个包含基金代码和排名的 DataFrame。
-    """
-    print(f"    正在获取 {fund_type} 类型基金在 {start_date} 至 {end_date} 期间的排名...", flush=True)
-    url = f"http://fund.eastmoney.com/data/rankhandler.aspx?op=dy&dt=kf&ft={fund_type}&rs=&gs=0&sc=qjzf&st=desc&sd={start_date}&ed={end_date}&es=1&qdii=&pi=1&pn=10000&dx=1"
-    headers = {'User-Agent': random.choice(USER_AGENTS)}
-    try:
-        response = session.get(url, headers=headers, timeout=TIMEOUT)
-        response.raise_for_status()
-        match = re.search(r'var\s+rankData\s*=\s*(\[.*?\]);', response.text)
-        if not match:
-            print(f"    × 未找到 {fund_type} 类型在 {start_date} 至 {end_date} 期间的排名数据。")
-            return pd.DataFrame()
-
-        data_list = json.loads(match.group(1))
-        df = pd.DataFrame(data_list, columns=['基金代码', '名称', '日期', '单位净值', '累计净值', '日增长率',
-                                        '近1周', '近1月', '近3月', '近6月', '近1年', '近2年',
-                                        '近3年', '今年来', '成立来', '成立日期', '手续费'])
-        
-        # 仅保留基金代码和名称
-        df = df[['基金代码', '名称']].copy()
-        
-        print(f"    √ 成功获取 {len(df)} 条数据。", flush=True)
-        return df
-    except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError) as e:
-        print(f"    × 获取排名数据失败: {e}", flush=True)
-        return pd.DataFrame()
-
-def comprehensive_screener():
-    """
-    执行基金的综合筛选流程。
-    包括四四三三法则筛选和量化指标筛选。
-    """
-    all_funds_df = get_all_funds_from_eastmoney()
-    if all_funds_df.empty:
-        return pd.DataFrame()
-
-    print(">>> 步骤2: 执行 '四四三三法则' 筛选...", flush=True)
-    
-    # 获取不同时间段的排名数据
-    end_date_str = datetime.now().strftime('%Y-%m-%d')
-    start_3y_str = (datetime.now() - timedelta(days=3 * 365)).strftime('%Y-%m-%d')
-    start_2y_str = (datetime.now() - timedelta(days=2 * 365)).strftime('%Y-%m-%d')
-    start_1y_str = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-    start_6m_str = (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d')
-    start_3m_str = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
-    
-    # 统一使用混合型基金排名数据进行筛选
-    df_3y = get_fund_rankings(start_3y_str, end_date_str, 'hh')
-    df_2y = get_fund_rankings(start_2y_str, end_date_str, 'hh')
-    df_1y = get_fund_rankings(start_1y_str, end_date_str, 'hh')
-    df_6m = get_fund_rankings(start_6m_str, end_date_str, 'hh')
-    df_3m = get_fund_rankings(start_3m_str, end_date_str, 'hh')
-    
-    # 获取排名前 25% 的基金列表
-    top25_3y = df_3y.head(int(len(df_3y) * 0.25))
-    top25_2y = df_2y.head(int(len(df_2y) * 0.25))
-    top25_1y = df_1y.head(int(len(df_1y) * 0.25))
-    
-    # 获取排名前 33.3% 的基金列表
-    top33_6m = df_6m.head(int(len(df_6m) * 0.333))
-    top33_3m = df_3m.head(int(len(df_3m) * 0.333))
-    
-    # 执行多维度合并筛选
-    # 使用 merge 代替 join，并指定 on='基金代码' 和 suffixes，以解决列名冲突
-    # 这里通过 on='基金代码' 来合并，并为重复的'名称'列添加后缀
-    selected_funds_df = pd.merge(top25_3y, top25_2y, on='基金代码', how='inner', suffixes=('_3y', '_2y'))
-    selected_funds_df = pd.merge(selected_funds_df, top25_1y, on='基金代码', how='inner', suffixes=('', '_1y'))
-    selected_funds_df = pd.merge(selected_funds_df, top33_6m, on='基金代码', how='inner', suffixes=('', '_6m'))
-    selected_funds_df = pd.merge(selected_funds_df, top33_3m, on='基金代码', how='inner', suffixes=('', '_3m'))
-    
-    # 清理掉多余的名称列，只保留一个
-    selected_funds_df = selected_funds_df.loc[:, ~selected_funds_df.columns.duplicated()]
-    
-    print(f"    √ '四四三三法则' 筛选完成，剩余 {len(selected_funds_df)} 只基金。", flush=True)
-
-    if selected_funds_df.empty:
-        print("    × 无基金通过 '四四三三法则' 筛选，无法进行下一步分析。", flush=True)
-        return pd.DataFrame()
-
-    selected_funds_df = pd.merge(selected_funds_df, all_funds_df[['基金代码', '名称', '类型']], on='基金代码', how='left')
-    selected_funds_df.rename(columns={'名称_x': '名称'}, inplace=True)
-    selected_funds_df = selected_funds_df.drop(columns=['名称_y'], errors='ignore')
-    
-    # 保存初步筛选结果
-    selected_funds_df.to_csv('selected_funds.csv', index=False, encoding='utf-8-sig')
-    print(f"    初步筛选结果已保存至 selected_funds.csv", flush=True)
-
-    return selected_funds_df
-    
 def get_fund_net_values(code, start_date, end_date):
     """
     获取基金历史净值数据
     """
+    cache_file = os.path.join(CACHE_DIR, f"net_values_{code}.pkl")
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "rb") as f:
+                net_df, latest_value = pickle.load(f)
+            if not net_df.empty and len(net_df) >= MIN_DAYS:
+                return net_df, latest_value, 'cache'
+        except Exception:
+            pass
+    
     df, latest_value = get_net_values_from_pingzhongdata(code, start_date, end_date)
     if not df.empty and len(df) >= MIN_DAYS:
+        try:
+            with open(cache_file, "wb") as f:
+                pickle.dump((df, latest_value), f)
+        except Exception:
+            pass
         return df, latest_value, 'pingzhongdata'
+        
+    df, latest_value = get_net_values_from_lsjz(code, start_date, end_date)
+    if not df.empty and len(df) >= MIN_DAYS:
+        try:
+            with open(cache_file, "wb") as f:
+                pickle.dump((df, latest_value), f)
+        except Exception:
+            pass
+        return df, latest_value, 'lsjz'
+    
     return pd.DataFrame(), None, 'None'
 
 def get_net_values_from_pingzhongdata(code, start_date, end_date):
@@ -238,8 +169,77 @@ def get_net_values_from_pingzhongdata(code, start_date, end_date):
     except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError) as e:
         return pd.DataFrame(), None
 
+def get_net_values_from_lsjz(code, start_date, end_date):
+    """从 fund.eastmoney.com/f10/lsjz 接口获取净值"""
+    url = f"http://fund.eastmoney.com/f10/lsjz?fundCode={code}&pageIndex=1&pageSize=50000"
+    headers = {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Referer': f'http://fund.eastmoney.com/f10/fjcc_{code}.html',
+        'Accept': 'application/json, text/plain, */*',
+        'Connection': 'keep-alive'
+    }
+    try:
+        response = session.get(url, headers=headers, timeout=TIMEOUT)
+        response.raise_for_status()
+        data_str_match = re.search(r'var\s+apidata=\{content:"(.*?)",', response.text, re.DOTALL)
+        if not data_str_match:
+            return pd.DataFrame(), None
+            
+        json_data_str = data_str_match.group(1).replace("\\", "")
+        data = json.loads(json_data_str)
+        if 'LSJZList' in data and data['LSJZList']:
+            df = pd.DataFrame(data['LSJZList']).rename(columns={'FSRQ': 'date', 'DWJZ': 'net_value'})
+            df['date'] = pd.to_datetime(df['date'])
+            df['net_value'] = pd.to_numeric(df['DWJZ'], errors='coerce')
+            df = df[(df['date'] >= pd.to_datetime(start_date)) & (df['date'] <= pd.to_datetime(end_date))]
+            df = df.sort_values('date').dropna(subset=['net_value']).reset_index(drop=True)
+            latest_value = df['net_value'].iloc[-1] if not df.empty else None
+            return df, latest_value
+        return pd.DataFrame(), None
+    except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError) as e:
+        return pd.DataFrame(), None
+
+def get_fund_realtime_estimate(code):
+    """获取基金实时估值"""
+    cache_file = os.path.join(CACHE_DIR, f"realtime_estimate_{code}.pkl")
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            pass
+    
+    url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={int(time.time() * 1000)}"
+    headers = {'User-Agent': random.choice(USER_AGENTS)}
+    try:
+        response = session.get(url, headers=headers, timeout=TIMEOUT)
+        response.raise_for_status()
+        match = re.search(r'jsonpgz\((.*)\)', response.text, re.DOTALL)
+        if match:
+            json_data = json.loads(match.group(1))
+            gsz = json_data.get('gsz')
+            if gsz:
+                try:
+                    gsz_float = float(gsz)
+                    with open(cache_file, "wb") as f:
+                        pickle.dump(gsz_float, f)
+                    return gsz_float
+                except (ValueError, TypeError):
+                    pass
+        return None
+    except Exception as e:
+        return None
+
 def get_fund_fee(code):
     """获取基金管理费率"""
+    cache_file = os.path.join(CACHE_DIR, f"fee_{code}.pkl")
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            pass
+    
     url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js?v={int(time.time() * 1000)}"
     headers = {'User-Agent': random.choice(USER_AGENTS)}
     try:
@@ -247,12 +247,23 @@ def get_fund_fee(code):
         response.raise_for_status()
         fee_match = re.search(r'data_fundTribble\.ManagerFee=\'([\d.]+)\'', response.text)
         fee = float(fee_match.group(1)) if fee_match else 1.5
+        with open(cache_file, "wb") as f:
+            pickle.dump(fee, f)
         return fee
     except Exception:
         return 1.5
 
 def get_fund_holdings(code):
     """使用 Playwright 获取基金持仓数据"""
+    cache_file = os.path.join(CACHE_DIR, f"holdings_{code}.pkl")
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "rb") as f:
+                holdings = pickle.load(f)
+            return holdings
+        except Exception:
+            pass
+    
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -275,13 +286,39 @@ def get_fund_holdings(code):
                             'code': cells[2].text.strip(),
                             'ratio': cells[3].text.strip().replace('%', '')
                         })
+                if holdings:
+                    with open(cache_file, "wb") as f:
+                        pickle.dump(holdings, f)
                 return holdings
             return []
     except Exception as e:
         print(f"    × Playwright 请求或解析失败: {e}", flush=True)
         return []
 
-def calculate_metrics(net_df):
+def calculate_beta(fund_returns, market_returns):
+    """计算贝塔系数"""
+    if len(fund_returns) < 2 or len(market_returns) < 2:
+        return None
+    aligned_df = pd.DataFrame({'fund': fund_returns, 'market': market_returns}).dropna()
+    if len(aligned_df) < 2:
+        return None
+    fund_returns = aligned_df['fund']
+    market_returns = aligned_df['market']
+    cov_matrix = np.cov(fund_returns, market_returns)
+    beta = cov_matrix[0, 1] / cov_matrix[1, 1] if cov_matrix[1, 1] != 0 else None
+    return round(beta, 2) if beta is not None else None
+
+def calculate_max_drawdown(net_values):
+    """计算最大回撤"""
+    if len(net_values) < 2:
+        return None
+    net_values = pd.Series(net_values)
+    rolling_max = net_values.expanding().max()
+    drawdown = (net_values - rolling_max) / rolling_max
+    max_drawdown = drawdown.min() * 100
+    return round(max_drawdown, 2)
+
+def calculate_metrics(net_df, index_df):
     """计算基金量化指标"""
     if len(net_df) < MIN_DAYS:
         return None
@@ -293,47 +330,111 @@ def calculate_metrics(net_df):
     
     volatility = returns.std() * np.sqrt(252) * 100
     sharpe = (annual_return - RISK_FREE_RATE) / volatility if volatility > 0 else 0
+    max_drawdown = calculate_max_drawdown(net_df['net_value'])
+    
+    beta = None
+    if not index_df.empty:
+        index_returns = index_df['net_value'].pct_change().dropna()
+        beta = calculate_beta(returns, index_returns)
     
     return {
         'annual_return': round(annual_return, 2),
         'volatility': round(volatility, 2),
-        'sharpe': round(sharpe, 2)
+        'sharpe': round(sharpe, 2),
+        'max_drawdown': max_drawdown,
+        'beta': beta
     }
 
-def process_fund(row, end_date):
-    """处理单只基金，获取详细信息并进行量化筛选"""
-    code = row['基金代码']
-    name = row['名称']
-    fund_type = row['类型']
-
-    print(f"\n--- 正在深度分析基金: {name} ({code})...", flush=True)
-
-    start_date = (datetime.now() - timedelta(days=3 * 365)).strftime('%Y-%m-%d')
-    net_df, latest_net_value, _ = get_fund_net_values(code, start_date, end_date)
+def analyze_holdings(holdings):
+    """分析持仓并计算行业集中度"""
+    industry_ratios = {}
+    for holding in holdings:
+        stock_code = holding.get('code', 'N/A')
+        ratio_str = holding.get('ratio', '0')
+        try:
+            ratio = float(ratio_str) if ratio_str else 0
+        except ValueError:
+            ratio = 0
+        industry = SW_INDUSTRY_MAPPING.get(stock_code, '其他')
+        industry_ratios[industry] = industry_ratios.get(industry, 0) + ratio
     
-    if net_df.empty or len(net_df) < MIN_DAYS:
-        print(f"    × 基金 {name} ({code}) 数据不足，跳过。", flush=True)
-        return None
+    if not industry_ratios:
+        return pd.DataFrame(), 0
+        
+    industry_df = pd.DataFrame(list(industry_ratios.items()), columns=['行业', '占比 (%)'])
+    industry_df = industry_df.sort_values(by='占比 (%)', ascending=False)
+    top3_concentration = industry_df['占比 (%)'].iloc[:3].sum() if len(industry_df) >= 3 else industry_df['占比 (%)'].sum()
+    return industry_df, round(top3_concentration, 2)
 
-    metrics = calculate_metrics(net_df)
+def process_fund(row, start_date, end_date, index_df, total_funds, idx):
+    """处理单只基金，获取详细信息并进行量化筛选"""
+    code = row.基金代码
+    name = row.名称
+    fund_type = row.类型
+    reasons = []
+    debug_info = {'基金代码': code, '基金名称': name, '基金类型': fund_type}
+
+    print(f"\n--- 正在处理基金 {idx}/{total_funds} ({', '.join(FUND_TYPE_FILTER)}): {name} ({code})...", flush=True)
+    
+    start_time = time.time()
+    net_df, latest_net_value, data_source = get_fund_net_values(code, start_date, end_date)
+    debug_info['数据源'] = data_source
+    debug_info['数据点数'] = len(net_df) if not net_df.empty else 0
+
+    if net_df.empty or len(net_df) < MIN_DAYS:
+        reasons.append(f"数据不足（{len(net_df)}天 < {MIN_DAYS}天）")
+        debug_info['筛选状态'] = '未通过'
+        debug_info['失败原因'] = ', '.join(reasons)
+        debug_info['处理耗时'] = round(time.time() - start_time, 2)
+        print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
+        return None, debug_info
+
+    metrics = calculate_metrics(net_df, index_df)
     if metrics is None:
-        print(f"    × 基金 {name} ({code}) 指标计算失败，跳过。", flush=True)
-        return None
+        reasons.append(f"数据不足（{len(net_df)}天 < {MIN_DAYS}天）")
+        debug_info['筛选状态'] = '未通过'
+        debug_info['失败原因'] = ', '.join(reasons)
+        debug_info['处理耗时'] = round(time.time() - start_time, 2)
+        print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
+        return None, debug_info
 
     fee = get_fund_fee(code)
+    realtime_estimate = get_fund_realtime_estimate(code)
     holdings = get_fund_holdings(code)
-    
+    industry_df, concentration = analyze_holdings(holdings) if holdings else (pd.DataFrame(), 0)
+
     is_passed = (metrics['annual_return'] >= MIN_RETURN and
                  metrics['volatility'] <= MAX_VOLATILITY and
                  metrics['sharpe'] >= MIN_SHARPE and
                  fee <= MAX_FEE)
 
+    debug_info.update({
+        '年化收益率 (%)': metrics['annual_return'],
+        '年化波动率 (%)': metrics['volatility'],
+        '夏普比率': metrics['sharpe'],
+        '贝塔系数': metrics['beta'],
+        '最大回撤 (%)': metrics['max_drawdown'],
+        '管理费 (%)': round(fee, 2),
+        '处理耗时': round(time.time() - start_time, 2)
+    })
+
     if not is_passed:
-        print(f"    × 基金 {name} ({code}) 未通过量化指标筛选，跳过。", flush=True)
-        return None
-    
-    # 将持仓数据转换为可读格式
-    holdings_str = ", ".join([f"{h['name']}({h['ratio']}%)" for h in holdings]) if holdings else "无数据"
+        if metrics['annual_return'] < MIN_RETURN:
+            reasons.append(f"年化收益率 ({metrics['annual_return']}%) < {MIN_RETURN}%")
+        if metrics['volatility'] > MAX_VOLATILITY:
+            reasons.append(f"波动率 ({metrics['volatility']}%) > {MAX_VOLATILITY}%")
+        if metrics['sharpe'] < MIN_SHARPE:
+            reasons.append(f"夏普比率 ({metrics['sharpe']}) < {MIN_SHARPE}")
+        if fee > MAX_FEE:
+            reasons.append(f"管理费 ({fee}%) > {MAX_FEE}%")
+        debug_info['筛选状态'] = '未通过'
+        debug_info['失败原因'] = ' / '.join(reasons)
+        print(f"    × 未通过筛选。原因：{' / '.join(reasons)}", flush=True)
+        return None, debug_info
+
+    score = (0.6 * (metrics['annual_return'] / 20) + 0.3 * metrics['sharpe'] + 0.1 * (2 - fee))
+    debug_info['筛选状态'] = '通过'
+    debug_info['综合评分'] = round(score, 2)
 
     result = {
         '基金代码': code,
@@ -342,53 +443,86 @@ def process_fund(row, end_date):
         '年化收益率 (%)': metrics['annual_return'],
         '年化波动率 (%)': metrics['volatility'],
         '夏普比率': metrics['sharpe'],
-        '最大回撤 (%)': 'N/A', # 该脚本中未计算，可根据需要补充
+        '贝塔系数': metrics['beta'],
+        '最大回撤 (%)': metrics['max_drawdown'],
         '管理费 (%)': round(fee, 2),
-        '前十大持仓': holdings_str
+        '最新净值': latest_net_value,
+        '实时估值': round(realtime_estimate, 4) if realtime_estimate else 'N/A',
+        '综合评分': round(score, 2),
+        '行业分布': industry_df.to_dict('records') if not industry_df.empty else [],
+        '行业集中度 (%)': concentration
     }
-    
-    print(f"    √ 基金 {name} ({code}) 通过所有筛选。", flush=True)
-    return result
+    print(f"    √ 通过筛选，评分: {result['综合评分']:.2f}", flush=True)
+    return result, debug_info
 
 def main():
-    print("--- 启动基金综合筛选器 ---", flush=True)
-    
+    print(">>> 基金筛选工具启动...", flush=True)
+    start_time = time.time()
     end_date = datetime.now().strftime('%Y-%m-%d')
-    
-    # 步骤1: 执行初步筛选 (四四三三法则)
-    selected_funds_df = comprehensive_screener()
-    if selected_funds_df.empty:
-        print("\n>>> 未找到符合初步筛选条件的基金。", flush=True)
+    start_date = (datetime.now() - timedelta(days=3 * 365)).strftime('%Y-%m-%d')
+
+    funds_df = get_all_funds_from_eastmoney()
+    if funds_df.empty:
+        print("无法获取基金列表，程序退出。", flush=True)
         return
 
-    # 步骤2: 对初步筛选结果进行深度分析和量化筛选
-    print("\n>>> 步骤3: 正在对初步筛选结果进行深度分析和量化筛选...", flush=True)
-    final_results = []
-    
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(process_fund, row.to_dict(), end_date) for _, row in selected_funds_df.iterrows()]
-        
-        for future in tqdm(futures, desc="深度分析中", total=len(selected_funds_df)):
+    total_funds = len(funds_df)
+    print(f">>> 共 {total_funds} 只基金待处理（{', '.join(FUND_TYPE_FILTER)}）。", flush=True)
+
+    index_code = '000300'
+    index_df = pd.DataFrame()
+    try:
+        index_df, _, _ = get_fund_net_values(index_code, start_date, end_date)
+        if index_df.empty:
+            print(f"    × 无法获取市场指数 {index_code} 数据，尝试备用指数。", flush=True)
+            index_code_fallback = '000001'
+            index_df, _, _ = get_fund_net_values(index_code_fallback, start_date, end_date)
+            if index_df.empty:
+                print(f"    × 无法获取市场指数 {index_code_fallback} 数据，贝塔系数将不可用。", flush=True)
+    except Exception as e:
+        print(f"    × 获取市场指数数据异常: {e}，贝塔系数将不可用。", flush=True)
+
+    results = []
+    debug_data = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(process_fund, row, start_date, end_date, index_df, total_funds, idx)
+                   for idx, row in enumerate(funds_df.itertuples(index=False), 1)]
+        for future in tqdm(futures, desc="处理基金", total=total_funds):
             try:
-                result = future.result()
+                result, debug_info = future.result()
+                debug_data.append(debug_info)
                 if result:
-                    final_results.append(result)
+                    results.append(result)
             except Exception as e:
                 print(f"    × 处理基金时发生异常: {e}", flush=True)
                 traceback.print_exc()
 
-    # 步骤3: 保存最终结果
-    if final_results:
-        final_df = pd.DataFrame(final_results)
-        final_df.sort_values('年化收益率 (%)', ascending=False, inplace=True)
-        final_df.to_csv('final_detailed_screener_results.csv', index=False, encoding='utf-8-sig')
-        print(f"\n>>> 最终筛选结果已保存至 final_detailed_screener_results.csv，共 {len(final_df)} 只基金。", flush=True)
-        print("\n--- 最终推荐基金列表 ---", flush=True)
-        print(final_df.to_string(), flush=True)
-    else:
-        print("\n>>> 未找到符合所有条件的基金，建议调整筛选条件。", flush=True)
+    if results:
+        final_df = pd.DataFrame(results).sort_values('综合评分', ascending=False).reset_index(drop=True)
+        final_df.index = final_df.index + 1
+        print("\n--- 筛选完成，推荐基金列表 ---", flush=True)
+        print(final_df.drop(columns=['行业分布']).to_string(), flush=True)
+        final_df.to_csv('recommended_cn_funds.csv', index=True, index_label='排名', encoding='utf-8-sig')
+        print("\n>>> 推荐结果已保存至 recommended_cn_funds.csv", flush=True)
 
-    print(f"\n--- 筛选器运行完毕 ---", flush=True)
+        for idx, row in final_df.iterrows():
+            code = row['基金代码']
+            name = row['基金名称']
+            print(f"\n--- 基金 {name} ({code}) 持仓详情 ---", flush=True)
+            if row['行业分布']:
+                industry_df = pd.DataFrame(row['行业分布'])
+                print(industry_df.to_string(index=False), flush=True)
+                print(f"    行业集中度（前三大行业占比）: {row['行业集中度 (%)']:.2f}%", flush=True)
+            else:
+                print("    × 无持仓数据。", flush=True)
+    else:
+        print("\n>>> 未找到符合条件的基金，建议调整筛选条件。", flush=True)
+
+    debug_df = pd.DataFrame(debug_data)
+    debug_df.to_csv('debug_fund_metrics.csv', index=False, encoding='utf-8-sig')
+    print(f">>> 调试信息已保存至 debug_fund_metrics.csv", flush=True)
+
+    print(f">>> 总耗时: {round(time.time() - start_time, 2)}秒", flush=True)
 
 if __name__ == "__main__":
     main()

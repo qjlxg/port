@@ -20,7 +20,7 @@ import traceback
 from io import StringIO
 
 def randHeader():
-    """Generates a random User-Agent header."""
+    """随机生成 User-Agent 请求头。"""
     head_user_agent = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko',
@@ -35,26 +35,26 @@ def randHeader():
     }
 
 def getURL(url, tries_num=5, sleep_time=1, time_out=10, proxies=None):
-    """Robust requests function with retries and random delays."""
+    """增强型 requests 请求，带重试机制和随机延时。"""
     for i in range(tries_num):
         try:
             time.sleep(random.uniform(0.5, sleep_time))
             res = requests.get(url, headers=randHeader(), timeout=time_out, proxies=proxies)
             res.raise_for_status()
             res.encoding = 'gbk'
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Successfully retrieved {url}")
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 成功获取 {url}")
             return res
         except requests.RequestException as e:
             time.sleep(sleep_time + i * 5)
-            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {url} connection failed, retrying ({i+1}/{tries_num}): {e}")
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Request to {url} failed, maximum retries reached.")
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {url} 连接失败，第 {i+1} 次重试: {e}")
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 请求 {url} 失败，已达最大重试次数")
     return None
 
 def get_fund_rankings(fund_type='hh', start_date='2018-09-11', end_date='2025-09-11', proxies=None):
-    """Fetches fund rankings and returns a filtered DataFrame."""
+    """获取基金排名并返回一个已筛选的 DataFrame。"""
     all_data = []
     
-    # Define ranking periods for the 4433 rule
+    # 为四四三三法则定义排名周期
     periods = {
         '3y': (start_date, end_date),
         '2y': (f"{int(end_date[:4])-2}{end_date[4:]}", end_date),
@@ -68,7 +68,7 @@ def get_fund_rankings(fund_type='hh', start_date='2018-09-11', end_date='2025-09
         try:
             response = getURL(url, proxies=proxies)
             if not response:
-                raise ValueError("Could not get response.")
+                raise ValueError("无法获取响应。")
             content = response.text
             content = re.sub(r'var rankData\s*=\s*({.*?});?', r'\1', content)
             content = re.sub(r'([,{])(\w+):', r'\1"\2":', content)
@@ -84,22 +84,26 @@ def get_fund_rankings(fund_type='hh', start_date='2018-09-11', end_date='2025-09
             df[f'rank_r({period})'] = df[f'rank({period})'] / total
             df.set_index('code', inplace=True)
             all_data.append(df)
-            print(f"Successfully fetched {period} rankings: {len(df)} records (total {total})")
+            print(f"成功获取 {period} 排名：{len(df)} 条（总计 {total}）")
         except Exception as e:
-            print(f"Failed to get {period} rankings: {e}")
+            print(f"获取 {period} 排名失败: {e}")
             all_data.append(pd.DataFrame())
 
     if not all_data or all(df.empty for df in all_data):
-        print("All ranking data fetching failed.")
+        print("所有排名数据获取失败。")
         return pd.DataFrame()
 
-    # Merge all ranking data
+    # 获取包含 'name' 列的第一个 DataFrame
     merged_df = all_data[0].copy()
+    
+    # 合并后续 DataFrame，并丢弃重复的 'name' 列
     for df in all_data[1:]:
         if not df.empty:
+            if 'name' in df.columns:
+                df = df.drop(columns=['name'])
             merged_df = merged_df.join(df, how='outer')
     
-    # Apply the 4433 rule
+    # 应用四四三三法则
     rule_thresholds = {'3y': 0.25, '2y': 0.25, '1y': 0.25, '6m': 1/3, '3m': 1/3}
     filtered_df = merged_df.copy()
     for period, threshold in rule_thresholds.items():
@@ -107,14 +111,13 @@ def get_fund_rankings(fund_type='hh', start_date='2018-09-11', end_date='2025-09
         if rank_col in filtered_df.columns:
             filtered_df = filtered_df[filtered_df[rank_col] <= threshold]
             
-    print(f"4433 rule filtered down to {len(filtered_df)} funds.")
+    print(f"四四三三法则筛选出 {len(filtered_df)} 只基金。")
     
     return filtered_df.reset_index().rename(columns={'index': 'fund_code', 'name': 'fund_name'})
 
 def get_fund_details(fund_code):
     """
-    **FIXED**: This function now uses a robust method to find and parse
-    the risk metrics tables, no longer relying on fixed table indices.
+    **已修复**: 此函数现在使用更健壮的方法查找和解析风险指标表格，不再依赖固定的表格索引。
     """
     try:
         fund_code = str(fund_code).zfill(6)
@@ -122,15 +125,15 @@ def get_fund_details(fund_code):
         
         res_risk = getURL(url_risk)
         if not res_risk:
-            raise Exception("Request failed, unable to get risk data.")
+            raise Exception("请求失败，无法获取风险数据。")
 
-        # Use StringIO to handle text as a file for pandas
+        # 使用 StringIO 将文本作为文件处理
         risk_tables = pd.read_html(StringIO(res_risk.text))
         
         sharpe_ratio = np.nan
         max_drawdown = np.nan
         
-        # Search for tables by keyword
+        # 通过关键词搜索表格
         for table in risk_tables:
             if '夏普比率' in table.iloc[:, 0].values:
                 sharpe_ratio = pd.to_numeric(table.loc[table.iloc[:, 0] == '夏普比率', '近1年'].iloc[0], errors='coerce')
@@ -138,14 +141,14 @@ def get_fund_details(fund_code):
                 max_drawdown = pd.to_numeric(table.loc[table.iloc[:, 0] == '最大回撤', '近1年'].iloc[0], errors='coerce')
 
         if pd.isna(sharpe_ratio) or pd.isna(max_drawdown):
-            raise ValueError("Could not find required risk metrics in the tables.")
+            raise ValueError("未能在表格中找到所需的风险指标。")
         
         return {
             'sharpe_ratio': sharpe_ratio,
             'max_drawdown': max_drawdown
         }
     except Exception as e:
-        print(f"Failed to get fund details for {fund_code}: {e}")
+        print(f"获取基金 {fund_code} 详情失败: {e}")
         traceback.print_exc()
         return {
             'sharpe_ratio': np.nan,
@@ -154,8 +157,7 @@ def get_fund_details(fund_code):
 
 def get_fund_manager_info(fund_code):
     """
-    **FIXED**: This function now correctly handles the manager's term data
-    by locating the correct table and extracting the text.
+    **已修复**: 此函数现在通过定位正确的表格来正确处理基金经理的任职期限数据。
     """
     try:
         fund_code = str(fund_code).zfill(6)
@@ -168,7 +170,7 @@ def get_fund_manager_info(fund_code):
         manager_table = soup.find('table', class_='tzjl') or soup.find('table', class_='w780')
         
         if not manager_table:
-            print(f"Could not find manager info table for {fund_code}.")
+            print(f"未找到基金经理 {fund_code} 的信息表。")
             return np.nan
             
         first_row = manager_table.find_all('tr')[1]
@@ -179,14 +181,13 @@ def get_fund_manager_info(fund_code):
         return manager_term
     
     except Exception as e:
-        print(f"Failed to get manager info for {fund_code}: {e}")
+        print(f"获取基金经理 {fund_code} 信息失败: {e}")
         traceback.print_exc()
         return np.nan
 
 def get_fund_holdings_with_selenium(fund_code):
     """
-    **FIXED**: This function correctly targets the dynamic content
-    using the new id='cctable' selector and waits for the data to load.
+    **已修复**: 此函数现在使用新的 `id='cctable'` 选择器，并等待数据加载。
     """
     fund_code = str(fund_code).zfill(6)
     options = Options()
@@ -211,15 +212,15 @@ def get_fund_holdings_with_selenium(fund_code):
         holdings_table_div = soup.find('div', id='cctable')
         
         if not holdings_table_div or '数据加载中' in holdings_table_div.get_text():
-            raise NoSuchElementException("Holdings table data did not load.")
+            raise NoSuchElementException("持仓数据表未加载。")
         
         holdings_table = holdings_table_div.find('table')
         if not holdings_table:
-            raise NoSuchElementException("Unable to find the holdings table.")
+            raise NoSuchElementException("无法找到持仓表格。")
             
         holdings_data = pd.read_html(StringIO(str(holdings_table)))[0]
         
-        # Rename columns to avoid key errors in subsequent steps
+        # 重命名列以避免后续步骤中的键错误
         holdings_data.columns = ['Rank', 'StockCode', 'StockName', 'CurrentPrice', 'Change', 'MarketValue(10k)', 'NetValue%', 'Shares(10k)', 'HoldingValue(10k)']
 
         holdings_data['NetValue%'] = pd.to_numeric(holdings_data['NetValue%'].str.strip('%'), errors='coerce')
@@ -230,11 +231,11 @@ def get_fund_holdings_with_selenium(fund_code):
         return {'concentration': top_10_concentration, 'num_holdings': num_holdings}
     
     except (WebDriverException, TimeoutException, NoSuchElementException) as e:
-        print(f"Selenium error while getting fund holdings: {e}")
+        print(f"使用 Selenium 获取基金持仓数据时出错: {e}")
         traceback.print_exc()
         return {'concentration': np.nan, 'num_holdings': np.nan}
     except Exception as e:
-        print(f"An error occurred while getting fund holdings: {e}")
+        print(f"获取基金持仓数据时发生错误: {e}")
         traceback.print_exc()
         return {'concentration': np.nan, 'num_holdings': np.nan}
     finally:
@@ -242,12 +243,12 @@ def get_fund_holdings_with_selenium(fund_code):
             driver.quit()
 
 def calculate_composite_score(df):
-    """Calculates the composite score for funds."""
-    print("Starting quantitative scoring...")
+    """计算基金的综合评分。"""
+    print("开始进行量化评分...")
     
     df = df.dropna(subset=['sharpe_ratio', 'max_drawdown', 'manager_term', 'concentration'], how='all')
     if df.empty:
-        print("No valid fund data to score.")
+        print("没有有效的基金数据可供评分。")
         return pd.DataFrame()
 
     df['sharpe_score'] = (df['sharpe_ratio'] - df['sharpe_ratio'].min()) / (df['sharpe_ratio'].max() - df['sharpe_ratio'].min())
@@ -272,7 +273,7 @@ def calculate_composite_score(df):
             'manager_term_score': 0.25,
             'concentration_score': 0.15,
         }
-        print("Warning: Missing return ranking data. Weights adjusted to compensate.")
+        print("警告: 缺少收益排名数据。已调整权重。")
 
     df['综合评分'] = df.apply(lambda row: sum(row[col] * weight for col, weight in weights.items() if not pd.isna(row[col])), axis=1)
     
@@ -289,26 +290,26 @@ def calculate_composite_score(df):
     return df[final_cols]
 
 def main():
-    """Main function to orchestrate the entire process."""
-    print("Step 1: Starting to get fund rankings and apply 4433 rule...")
+    """主函数，负责协调整个流程。"""
+    print("第 1 步: 开始获取基金排名并应用四四三三法则...")
     end_date = datetime.now().strftime('%Y-%m-%d')
     start_date = (datetime.now() - pd.DateOffset(years=3)).strftime('%Y-%m-%d')
     
-    # Get rankings and filter, the logic is now self-contained in get_fund_rankings
+    # 获取排名并筛选，逻辑已在 get_fund_rankings 中自包含
     filtered_df = get_fund_rankings(fund_type='hh', start_date=start_date, end_date=end_date)
     
     if filtered_df.empty:
-        print("\nFailed to get rankings or no funds passed the 4433 filter. Exiting.")
+        print("\n无法获取排名数据或没有基金通过四四三三筛选。程序退出。")
         return
 
-    # Process only the top 50 ranked funds for efficiency
+    # 为了效率，仅处理排名靠前的50只基金
     funds_to_process = filtered_df.head(50).to_dict('records')
     all_funds_data = []
 
     for i, fund in enumerate(funds_to_process, 1):
         fund_code = fund['fund_code']
         fund_name = fund['fund_name']
-        print(f"\n[{i}/{len(funds_to_process)}] Analyzing fund: {fund_name} ({fund_code})...")
+        print(f"\n[{i}/{len(funds_to_process)}] 正在分析基金: {fund_name} ({fund_code})...")
         
         details = get_fund_details(fund_code)
         manager_term = get_fund_manager_info(fund_code)
@@ -330,13 +331,13 @@ def main():
     final_report = calculate_composite_score(final_df)
     
     if final_report.empty:
-        print("\nFailed to get deep data for any funds; unable to score.")
+        print("\n无法获取任何基金的深度数据；无法进行评分。")
         return
         
     report_path = 'advanced_fund_report.csv'
     final_report.to_csv(report_path, encoding='gbk', index=False)
-    print(f"\nFinal report saved to '{report_path}'.")
-    print("Open the file to see the ranked fund list.")
+    print(f"\n最终报告已保存到 '{report_path}'。")
+    print("请打开文件查看基金排名。")
 
 if __name__ == '__main__':
     main()

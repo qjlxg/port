@@ -51,8 +51,10 @@ def getURL(url, tries_num=5, sleep_time=1, time_out=10, proxies=None):
     return None
 
 def get_fund_rankings(fund_type='hh', start_date='2018-09-12', end_date='2025-09-12', proxies=None):
-    """获取基金排名并返回一个已筛选的 DataFrame。"""
-    all_data = []
+    """
+    获取基金排名并返回一个已筛选的 DataFrame。
+    此版本已修复合并逻辑，确保 fund_code 和 fund_name 列始终存在。
+    """
     
     # 为四四三三法则定义排名周期
     periods = {
@@ -63,7 +65,7 @@ def get_fund_rankings(fund_type='hh', start_date='2018-09-12', end_date='2025-09
         '3m': (f"{int(end_date[:4])-(1 if int(end_date[5:7])<=3 else 0)}-{int(end_date[5:7])-3:02d}{end_date[7:]}", end_date)
     }
     
-    first_df = None
+    merged_df = None
     
     for period, (sd, ed) in periods.items():
         url = f'http://fund.eastmoney.com/data/rankhandler.aspx?op=dy&dt=kf&ft={fund_type}&rs=&gs=0&sc=qjzf&st=desc&sd={sd}&ed={ed}&es=1&qdii=&pi=1&pn=10000&dx=1'
@@ -80,33 +82,31 @@ def get_fund_rankings(fund_type='hh', start_date='2018-09-12', end_date='2025-09
             total = int(data['allRecords'])
             
             df = pd.DataFrame([r.split(',') for r in records])
+            
+            # 根据周期重命名列
             df = df[[0, 1, 3]].rename(columns={0: 'code', 1: 'name', 3: f'rose({period})'})
             df[f'rose({period})'] = pd.to_numeric(df[f'rose({period})'].str.replace('%', ''), errors='coerce') / 100
             df[f'rank({period})'] = range(1, len(df) + 1)
             df[f'rank_r({period})'] = df[f'rank({period})'] / total
-            df.set_index('code', inplace=True)
 
-            if first_df is None:
-                first_df = df.copy()
-            
-            all_data.append(df.drop(columns=['name'])) # 删除重复的'name'列
+            if merged_df is None:
+                # 第一次获取数据，作为基础 DataFrame
+                merged_df = df.copy()
+            else:
+                # 后面获取的数据，只保留代码、名称和排名信息
+                # 然后按 'code' 列进行合并
+                merged_df = pd.merge(merged_df, df.drop(columns='name'), on='code', how='outer')
             
             print(f"成功获取 {period} 排名：{len(df)} 条（总计 {total}）")
         except Exception as e:
             print(f"获取 {period} 排名失败: {e}")
-            all_data.append(pd.DataFrame())
+            # 如果某个周期数据获取失败，在合并时会因为缺失而显示 NaN
+            # 但不影响主流程，因为我们使用外连接（outer join）
 
-    if not all_data or all(df.empty for df in all_data):
+    if merged_df is None or merged_df.empty:
         print("所有排名数据获取失败。")
         return pd.DataFrame()
 
-    # 使用 concat 合并所有数据
-    merged_df = pd.concat(all_data, axis=1, join='outer')
-    
-    # 重新添加 name 列并重置索引
-    merged_df['name'] = first_df['name']
-    merged_df = merged_df.reset_index().rename(columns={'code': 'fund_code', 'name': 'fund_name'})
-    
     # 应用四四三三法则
     rule_thresholds = {'3y': 0.25, '2y': 0.25, '1y': 0.25, '6m': 1/3, '3m': 1/3}
     filtered_df = merged_df.copy()
@@ -117,7 +117,7 @@ def get_fund_rankings(fund_type='hh', start_date='2018-09-12', end_date='2025-09
             
     print(f"四四三三法则筛选出 {len(filtered_df)} 只基金。")
     
-    return filtered_df
+    return filtered_df.rename(columns={'code': 'fund_code', 'name': 'fund_name'})
 
 def get_fund_details(fund_code):
     """
@@ -129,7 +129,8 @@ def get_fund_details(fund_code):
         
         res_risk = getURL(url_risk)
         if not res_risk:
-            raise Exception("请求失败，无法获取风险数据。")
+            # 如果请求失败，返回 NaN，不中断
+            return { 'sharpe_ratio': np.nan, 'max_drawdown': np.nan }
 
         # 使用 StringIO 将文本作为文件处理
         risk_tables = pd.read_html(StringIO(res_risk.text))
@@ -143,9 +144,8 @@ def get_fund_details(fund_code):
                 sharpe_ratio = pd.to_numeric(table.loc[table.iloc[:, 0] == '夏普比率', '近1年'].iloc[0], errors='coerce')
             if '最大回撤' in table.iloc[:, 0].values:
                 max_drawdown = pd.to_numeric(table.loc[table.iloc[:, 0] == '最大回撤', '近1年'].iloc[0], errors='coerce')
-
-        if pd.isna(sharpe_ratio) or pd.isna(max_drawdown):
-            raise ValueError("未能在表格中找到所需的风险指标。")
+        
+        # 不再抛出 ValueError，如果找不到数据，sharpe_ratio 和 max_drawdown 会保持为 np.nan
         
         return {
             'sharpe_ratio': sharpe_ratio,
@@ -306,27 +306,34 @@ def main():
         print("\n无法获取排名数据或没有基金通过四四三三筛选。程序退出。")
         return
 
-    # 为了效率，仅处理排名靠前的50只基金
+    # 将 DataFrame 转换为字典列表，用于后续处理
     funds_to_process = filtered_df.head(50).to_dict('records')
     all_funds_data = []
 
     for i, fund in enumerate(funds_to_process, 1):
-        fund_code = fund['fund_code']  # 确保使用正确的键名
-        fund_name = fund['fund_name']
-        print(f"\n[{i}/{len(funds_to_process)}] 正在分析基金: {fund_name} ({fund_code})...")
-        
-        details = get_fund_details(fund_code)
-        manager_term = get_fund_manager_info(fund_code)
-        holdings = get_fund_holdings_with_selenium(fund_code)
-        
-        fund_data = {
-            'fund_code': fund_code,
-            'fund_name': fund_name,
-            **details,
-            'manager_term': manager_term,
-            **holdings
-        }
-        all_funds_data.append(fund_data)
+        try:
+            fund_code = fund['fund_code']
+            fund_name = fund['fund_name']
+            print(f"\n[{i}/{len(funds_to_process)}] 正在分析基金: {fund_name} ({fund_code})...")
+            
+            details = get_fund_details(fund_code)
+            manager_term = get_fund_manager_info(fund_code)
+            holdings = get_fund_holdings_with_selenium(fund_code)
+            
+            fund_data = {
+                'fund_code': fund_code,
+                'fund_name': fund_name,
+                **details,
+                'manager_term': manager_term,
+                **holdings
+            }
+            all_funds_data.append(fund_data)
+        except KeyError as e:
+            print(f"处理基金数据时出现键错误: {e}。跳过此基金。")
+            continue
+        except Exception as e:
+            print(f"处理基金 {fund_code} 时发生未知错误: {e}。跳过此基金。")
+            continue
         
     deep_data_df = pd.DataFrame(all_funds_data)
     

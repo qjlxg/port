@@ -50,7 +50,7 @@ def getURL(url, tries_num=5, sleep_time=1, time_out=10, proxies=None):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 请求 {url} 失败，已达最大重试次数")
     return None
 
-def get_fund_rankings(fund_type='hh', start_date='2018-09-11', end_date='2025-09-11', proxies=None):
+def get_fund_rankings(fund_type='hh', start_date='2018-09-12', end_date='2025-09-12', proxies=None):
     """获取基金排名并返回一个已筛选的 DataFrame。"""
     all_data = []
     
@@ -62,6 +62,8 @@ def get_fund_rankings(fund_type='hh', start_date='2018-09-11', end_date='2025-09
         '6m': (f"{int(end_date[:4])-(1 if int(end_date[5:7])<=6 else 0)}-{int(end_date[5:7])-6:02d}{end_date[7:]}", end_date),
         '3m': (f"{int(end_date[:4])-(1 if int(end_date[5:7])<=3 else 0)}-{int(end_date[5:7])-3:02d}{end_date[7:]}", end_date)
     }
+    
+    first_df = None
     
     for period, (sd, ed) in periods.items():
         url = f'http://fund.eastmoney.com/data/rankhandler.aspx?op=dy&dt=kf&ft={fund_type}&rs=&gs=0&sc=qjzf&st=desc&sd={sd}&ed={ed}&es=1&qdii=&pi=1&pn=10000&dx=1'
@@ -83,7 +85,12 @@ def get_fund_rankings(fund_type='hh', start_date='2018-09-11', end_date='2025-09
             df[f'rank({period})'] = range(1, len(df) + 1)
             df[f'rank_r({period})'] = df[f'rank({period})'] / total
             df.set_index('code', inplace=True)
-            all_data.append(df)
+
+            if first_df is None:
+                first_df = df.copy()
+            
+            all_data.append(df.drop(columns=['name'])) # 删除重复的'name'列
+            
             print(f"成功获取 {period} 排名：{len(df)} 条（总计 {total}）")
         except Exception as e:
             print(f"获取 {period} 排名失败: {e}")
@@ -93,15 +100,11 @@ def get_fund_rankings(fund_type='hh', start_date='2018-09-11', end_date='2025-09
         print("所有排名数据获取失败。")
         return pd.DataFrame()
 
-    # 获取包含 'name' 列的第一个 DataFrame
-    merged_df = all_data[0].copy()
+    # 使用 concat 合并所有数据
+    merged_df = pd.concat(all_data, axis=1, join='outer')
     
-    # 合并后续 DataFrame，并丢弃重复的 'name' 列
-    for df in all_data[1:]:
-        if not df.empty:
-            if 'name' in df.columns:
-                df = df.drop(columns=['name'])
-            merged_df = merged_df.join(df, how='outer')
+    # 重新添加 name 列并重置索引
+    merged_df['name'] = first_df['name']
     
     # 应用四四三三法则
     rule_thresholds = {'3y': 0.25, '2y': 0.25, '1y': 0.25, '6m': 1/3, '3m': 1/3}
@@ -292,10 +295,10 @@ def calculate_composite_score(df):
 def main():
     """主函数，负责协调整个流程。"""
     print("第 1 步: 开始获取基金排名并应用四四三三法则...")
+    # 根据当前日期设置开始和结束日期
     end_date = datetime.now().strftime('%Y-%m-%d')
     start_date = (datetime.now() - pd.DateOffset(years=3)).strftime('%Y-%m-%d')
     
-    # 获取排名并筛选，逻辑已在 get_fund_rankings 中自包含
     filtered_df = get_fund_rankings(fund_type='hh', start_date=start_date, end_date=end_date)
     
     if filtered_df.empty:

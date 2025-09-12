@@ -41,6 +41,7 @@ def getURL(url, tries_num=5, sleep_time=1, time_out=10, proxies=None):
             time.sleep(random.uniform(0.5, sleep_time))
             res = requests.get(url, headers=randHeader(), timeout=time_out, proxies=proxies)
             res.raise_for_status()
+            # 显式使用 'gbk' 编码
             res.encoding = 'gbk'
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 成功获取 {url}")
             return res
@@ -53,7 +54,7 @@ def getURL(url, tries_num=5, sleep_time=1, time_out=10, proxies=None):
 def get_fund_rankings(fund_type='hh', start_date='2018-09-12', end_date='2025-09-12', proxies=None):
     """
     获取基金排名并返回一个已筛选的 DataFrame。
-    此版本已修复合并逻辑，确保 fund_code 和 fund_name 列始终存在。
+    此版本已修复合并逻辑，确保 fund_code 和 fund_name 列始终存在，并解决了名称乱码问题。
     """
     
     # 为四四三三法则定义排名周期
@@ -73,10 +74,13 @@ def get_fund_rankings(fund_type='hh', start_date='2018-09-12', end_date='2025-09
             response = getURL(url, proxies=proxies)
             if not response:
                 raise ValueError("无法获取响应。")
-            content = response.text
+            
+            # 使用 response.content 进行解码，以避免requests自动编码的潜在问题
+            content = response.content.decode('gbk')
             content = re.sub(r'var rankData\s*=\s*({.*?});?', r'\1', content)
             content = re.sub(r'([,{])(\w+):', r'\1"\2":', content)
             content = content.replace('\'', '"')
+            
             data = json.loads(content)
             records = data['datas']
             total = int(data['allRecords'])
@@ -100,8 +104,6 @@ def get_fund_rankings(fund_type='hh', start_date='2018-09-12', end_date='2025-09
             print(f"成功获取 {period} 排名：{len(df)} 条（总计 {total}）")
         except Exception as e:
             print(f"获取 {period} 排名失败: {e}")
-            # 如果某个周期数据获取失败，在合并时会因为缺失而显示 NaN
-            # 但不影响主流程，因为我们使用外连接（outer join）
 
     if merged_df is None or merged_df.empty:
         print("所有排名数据获取失败。")
@@ -121,7 +123,7 @@ def get_fund_rankings(fund_type='hh', start_date='2018-09-12', end_date='2025-09
 
 def get_fund_details(fund_code):
     """
-    **已修复**: 此函数现在使用更健壮的方法查找和解析风险指标表格，不再依赖固定的表格索引。
+    此函数使用更健壮的方法查找和解析风险指标表格，不再依赖固定的表格索引。
     """
     try:
         fund_code = str(fund_code).zfill(6)
@@ -161,7 +163,7 @@ def get_fund_details(fund_code):
 
 def get_fund_manager_info(fund_code):
     """
-    **已修复**: 此函数现在通过定位正确的表格来正确处理基金经理的任职期限数据。
+    此函数通过定位正确的表格来正确处理基金经理的任职期限数据。
     """
     try:
         fund_code = str(fund_code).zfill(6)
@@ -191,7 +193,7 @@ def get_fund_manager_info(fund_code):
 
 def get_fund_holdings_with_selenium(fund_code):
     """
-    **已修复**: 此函数现在使用新的 `id='cctable'` 选择器，并等待数据加载。
+    此函数使用新的 `id='cctable'` 选择器，并等待数据加载。
     """
     fund_code = str(fund_code).zfill(6)
     options = Options()
@@ -250,16 +252,19 @@ def calculate_composite_score(df):
     """计算基金的综合评分。"""
     print("开始进行量化评分...")
     
-    df = df.dropna(subset=['sharpe_ratio', 'max_drawdown', 'manager_term', 'concentration'], how='all')
-    if df.empty:
+    # 使用 .copy() 明确创建一个副本，避免 SettingWithCopyWarning
+    df_copy = df.copy()
+    
+    df_copy = df_copy.dropna(subset=['sharpe_ratio', 'max_drawdown', 'manager_term', 'concentration'], how='all')
+    if df_copy.empty:
         print("没有有效的基金数据可供评分。")
         return pd.DataFrame()
 
     # 使用 .loc 避免 SettingWithCopyWarning
-    df.loc[:, 'sharpe_score'] = (df['sharpe_ratio'] - df['sharpe_ratio'].min()) / (df['sharpe_ratio'].max() - df['sharpe_ratio'].min())
-    df.loc[:, 'max_drawdown_score'] = 1 - (df['max_drawdown'] - df['max_drawdown'].min()) / (df['max_drawdown'].max() - df['max_drawdown'].min())
-    df.loc[:, 'manager_term_score'] = (df['manager_term'] - df['manager_term'].min()) / (df['manager_term'].max() - df['manager_term'].min())
-    df.loc[:, 'concentration_score'] = 1 - (df['concentration'] - df['concentration'].min()) / (df['concentration'].max() - df['concentration'].min())
+    df_copy.loc[:, 'sharpe_score'] = (df_copy['sharpe_ratio'] - df_copy['sharpe_ratio'].min()) / (df_copy['sharpe_ratio'].max() - df_copy['sharpe_ratio'].min())
+    df_copy.loc[:, 'max_drawdown_score'] = 1 - (df_copy['max_drawdown'] - df_copy['max_drawdown'].min()) / (df_copy['max_drawdown'].max() - df_copy['max_drawdown'].min())
+    df_copy.loc[:, 'manager_term_score'] = (df_copy['manager_term'] - df_copy['manager_term'].min()) / (df_copy['manager_term'].max() - df_copy['manager_term'].min())
+    df_copy.loc[:, 'concentration_score'] = 1 - (df_copy['concentration'] - df_copy['concentration'].min()) / (df_copy['concentration'].max() - df_copy['concentration'].min())
     
     weights = {
         'sharpe_score': 0.30,
@@ -268,8 +273,8 @@ def calculate_composite_score(df):
         'concentration_score': 0.10,
     }
 
-    if 'rank(1y)' in df.columns:
-        df.loc[:, 'ranking_score'] = 1 - (df['rank(1y)'] - df['rank(1y)'].min()) / (df['rank(1y)'].max() - df['rank(1y)'].min())
+    if 'rank(1y)' in df_copy.columns:
+        df_copy.loc[:, 'ranking_score'] = 1 - (df_copy['rank(1y)'] - df_copy['rank(1y)'].min()) / (df_copy['rank(1y)'].max() - df_copy['rank(1y)'].min())
         weights['ranking_score'] = 0.20
     else:
         weights = {
@@ -280,9 +285,9 @@ def calculate_composite_score(df):
         }
         print("警告: 缺少收益排名数据。已调整权重。")
 
-    df.loc[:, '综合评分'] = df.apply(lambda row: sum(row[col] * weight for col, weight in weights.items() if not pd.isna(row[col])), axis=1)
+    df_copy.loc[:, '综合评分'] = df_copy.apply(lambda row: sum(row[col] * weight for col, weight in weights.items() if not pd.isna(row[col])), axis=1)
     
-    df = df.sort_values(by='综合评分', ascending=False)
+    df_copy = df_copy.sort_values(by='综合评分', ascending=False)
     
     final_cols = [
         'fund_code', 'fund_name', '综合评分',
@@ -292,7 +297,7 @@ def calculate_composite_score(df):
         'num_holdings'
     ]
     
-    return df[final_cols]
+    return df_copy[final_cols]
 
 def main():
     """主函数，负责协调整个流程。"""
@@ -315,6 +320,8 @@ def main():
         try:
             fund_code = fund['fund_code']
             fund_name = fund['fund_name']
+            # 尝试修复乱码
+            fund_name = fund_name.encode('latin1').decode('gbk', 'ignore')
             print(f"\n[{i}/{len(funds_to_process)}] 正在分析基金: {fund_name} ({fund_code})...")
             
             details = get_fund_details(fund_code)

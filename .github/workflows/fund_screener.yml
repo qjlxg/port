@@ -32,8 +32,8 @@ jobs:
         if [ -f requirements.txt ]; then
           pip install -r requirements.txt
         else
-        
           pip install selenium webdriver-manager pandas requests beautifulsoup4 numpy yfinance lxml openpyxl akshare aiofiles aiohttp
+          
         fi
         python -m playwright install chromium
 

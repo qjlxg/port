@@ -122,14 +122,15 @@ def get_fund_net_values(code, start_date, end_date):
         try:
             with open(cache_file, "rb") as f:
                 net_df, latest_value = pickle.load(f)
-            if not net_df.empty and len(net_df) >= MIN_DAYS:
+            # 检查缓存数据是否覆盖所需的时间范围
+            if not net_df.empty and net_df['date'].min() <= pd.to_datetime(start_date):
                 return net_df, latest_value, 'cache'
         except Exception:
             pass
     
     # 尝试pingzhongdata接口
     df, latest_value = get_net_values_from_pingzhongdata(code, start_date, end_date)
-    if not df.empty and len(df) >= MIN_DAYS:
+    if not df.empty:
         try:
             with open(cache_file, "wb") as f:
                 pickle.dump((df, latest_value), f)
@@ -139,7 +140,7 @@ def get_fund_net_values(code, start_date, end_date):
     
     # 尝试lsjz接口
     df, latest_value = get_net_values_from_lsjz(code, start_date, end_date)
-    if not df.empty and len(df) >= MIN_DAYS:
+    if not df.empty:
         try:
             with open(cache_file, "wb") as f:
                 pickle.dump((df, latest_value), f)
@@ -165,6 +166,10 @@ def get_net_values_from_pingzhongdata(code, start_date, end_date):
             return pd.DataFrame(), None
         
         net_worth_list = json.loads(net_worth_match.group(1))
+        # 增加判断，防止数据为空或格式不正确
+        if not net_worth_list or not all(isinstance(item, dict) and 'x' in item and 'y' in item for item in net_worth_list):
+            return pd.DataFrame(), None
+            
         df = pd.DataFrame(net_worth_list).rename(columns={'x': 'date', 'y': 'net_value'})
         df['date'] = pd.to_datetime(df['date'], unit='ms')
         df['net_value'] = pd.to_numeric(df['net_value'], errors='coerce')
@@ -173,6 +178,7 @@ def get_net_values_from_pingzhongdata(code, start_date, end_date):
         latest_value = df['net_value'].iloc[-1] if not df.empty else None
         return df, latest_value
     except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError) as e:
+        print(f"    × pingzhongdata接口请求或解析失败: {e}", flush=True)
         return pd.DataFrame(), None
 
 def get_net_values_from_lsjz(code, start_date, end_date):
@@ -202,6 +208,7 @@ def get_net_values_from_lsjz(code, start_date, end_date):
             return df, latest_value
         return pd.DataFrame(), None
     except (requests.exceptions.RequestException, json.JSONDecodeError, IndexError) as e:
+        print(f"    × lsjz接口请求或解析失败: {e}", flush=True)
         return pd.DataFrame(), None
 
 def get_fund_realtime_estimate(code):
@@ -340,9 +347,7 @@ def calculate_max_drawdown(net_values):
 
 # 修改: 函数现在接受一个period_days参数来计算不同时间段的指标
 def calculate_metrics(net_df, period_days, index_df):
-    if len(net_df) < period_days:
-        return None
-        
+    
     start_date = datetime.now() - timedelta(days=period_days)
     df_period = net_df[net_df['date'] >= start_date].copy()
     
@@ -397,15 +402,25 @@ def calculate_final_score(metrics_dict):
     weights = {'1年': 0.5, '2年': 0.3, '3年': 0.2}
     total_score = 0
     
-    for period, weight in weights.items():
-        if period in metrics_dict and metrics_dict[period]:
+    # 动态调整权重
+    total_weight = 0
+    for period, metrics in metrics_dict.items():
+        if metrics:
+            total_weight += weights[period]
+    
+    # 如果没有任何数据，返回0分
+    if total_weight == 0:
+        return 0
+
+    # 归一化权重
+    normalized_weights = {period: weights[period] / total_weight for period in metrics_dict if metrics_dict[period]}
+
+    for period, metrics in metrics_dict.items():
+        if metrics:
             # 使用夏普比率作为主要评分依据，并进行归一化
-            sharpe = metrics_dict[period]['sharpe']
+            sharpe = metrics['sharpe']
             score = max(0, sharpe * 10) # 简单归一化，夏普比率0.2对应2分
-            total_score += score * weight
-        else:
-            # 某周期数据不足，扣分处理
-            total_score -= 5 # 扣5分作为惩罚
+            total_score += score * normalized_weights[period]
             
     return round(total_score, 2)
 
@@ -422,19 +437,18 @@ def process_fund(row, start_date_3yr, end_date, index_df, total_funds, idx):
     # 首先获取最长周期（3年）的数据
     net_df, latest_net_value, data_source = get_fund_net_values(code, start_date_3yr, end_date)
     
-    if net_df.empty or len(net_df) < TIME_PERIODS['1年']:
-        reasons.append(f"数据不足（{len(net_df)}天 < {TIME_PERIODS['1年']}天）")
+    # 如果数据量连1年都不到，直接跳过
+    if net_df.empty or len(net_df) < TIME_PERIODS['1年'] * 0.8:
+        reasons.append(f"数据不足（{len(net_df)}天 < {int(TIME_PERIODS['1年'] * 0.8)}天）")
         print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
-        return None, {'基金代码': code, '筛选状态': '未通过', '失败原因': ', '.join(reasons)}
-    
+        return None, {'基金代码': code, '筛选状态': '未通过', '失败原因': ' / '.join(reasons)}
+
     # 计算所有时间周期的指标
     metrics_dict = {}
     for period, days in TIME_PERIODS.items():
         metrics = calculate_metrics(net_df, days, index_df)
         if metrics:
             metrics_dict[period] = metrics
-        else:
-            reasons.append(f"数据不足（{len(net_df)}天）无法计算{period}指标")
 
     # 如果1年期指标不满足筛选条件，则直接淘汰
     if '1年' not in metrics_dict or \
@@ -445,11 +459,11 @@ def process_fund(row, start_date_3yr, end_date, index_df, total_funds, idx):
             reasons.append("无法计算1年期指标")
         else:
             if metrics_dict['1年']['annual_return'] < MIN_RETURN:
-                reasons.append(f"年化收益率 ({metrics_dict['1年']['annual_return']}%) < {MIN_RETURN}%")
+                reasons.append(f"1年年化收益率 ({metrics_dict['1年']['annual_return']}%) < {MIN_RETURN}%")
             if metrics_dict['1年']['volatility'] > MAX_VOLATILITY:
-                reasons.append(f"波动率 ({metrics_dict['1年']['volatility']}%) > {MAX_VOLATILITY}%")
+                reasons.append(f"1年年化波动率 ({metrics_dict['1年']['volatility']}%) > {MAX_VOLATILITY}%")
             if metrics_dict['1年']['sharpe'] < MIN_SHARPE:
-                reasons.append(f"夏普比率 ({metrics_dict['1年']['sharpe']}) < {MIN_SHARPE}")
+                reasons.append(f"1年夏普比率 ({metrics_dict['1年']['sharpe']}) < {MIN_SHARPE}")
         
         print(f"    × 未通过筛选。原因：{' / '.join(reasons)}", flush=True)
         return None, {'基金代码': code, '筛选状态': '未通过', '失败原因': ' / '.join(reasons)}
@@ -492,7 +506,7 @@ def main():
     print(">>> 基金筛选工具启动...", flush=True)
     start_time = time.time()
     end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date_3yr = (datetime.now() - timedelta(days=TIME_PERIODS['3年'])).strftime('%Y-%m-%d')
+    start_date_3yr = (datetime.now() - timedelta(days=TIME_PERIODS['3年'] + 10)).strftime('%Y-%m-%d') # 额外增加10天确保数据覆盖
 
     funds_df = get_all_funds_from_eastmoney()
     if funds_df.empty:
@@ -505,9 +519,11 @@ def main():
     index_code = '000300'
     index_df = pd.DataFrame()
     try:
+        # 获取沪深300指数数据作为市场基准
         index_df, _, _ = get_fund_net_values(index_code, start_date_3yr, end_date)
         if index_df.empty:
-            index_code_fallback = '000001'
+            index_code_fallback = '000001' # 上证指数
+            print(f"    × 获取指数 {index_code} 数据失败，尝试使用备用指数 {index_code_fallback}。", flush=True)
             index_df, _, _ = get_fund_net_values(index_code_fallback, start_date_3yr, end_date)
     except Exception as e:
         print(f"    × 获取市场指数数据异常: {e}，贝塔系数将不可用。", flush=True)
@@ -534,10 +550,13 @@ def main():
         
         columns_to_show = ['基金代码', '基金名称', '基金类型', '综合评分']
         for period in TIME_PERIODS.keys():
-            columns_to_show.extend([f'{period}夏普比率', f'{period}年化收益率 (%)', f'{period}年化波动率 (%)'])
+            columns_to_show.extend([f'{period}年化收益率 (%)', f'{period}年化波动率 (%)', f'{period}夏普比率', f'{period}贝塔系数', f'{period}最大回撤 (%)'])
+        
+        # 排除掉没有这些列的基金，或者用NaN填充
+        final_df_filtered = final_df.reindex(columns=columns_to_show)
         
         print("\n--- 筛选完成，推荐基金列表 ---", flush=True)
-        print(final_df[columns_to_show].to_string(), flush=True)
+        print(final_df_filtered.to_string(), flush=True)
         final_df.to_csv('recommended_cn_funds.csv', index=True, index_label='排名', encoding='utf-8-sig')
         print("\n>>> 推荐结果已保存至 recommended_cn_funds.csv", flush=True)
 

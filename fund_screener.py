@@ -26,7 +26,7 @@ MAX_VOLATILITY = 25.0  # 波动率 ≤ 25%
 MIN_SHARPE = 0.2  # 夏普比率 ≥ 0.2
 MAX_FEE = 2.5  # 管理费 ≤ 2.5%
 RISK_FREE_RATE = 3.0  # 无风险利率 3%
-MIN_DAYS = 365  # 最低数据天数，用于计算一年期指标
+MIN_DAYS = 90  # 最低数据天数，用于初步筛选
 TIMEOUT = 10  # 网络请求超时时间（秒）
 FUND_TYPE_FILTER = ['混合型', '股票型', '指数型']  # 基金类型筛选
 
@@ -351,12 +351,21 @@ def calculate_metrics(net_df, period_days, index_df):
     start_date = datetime.now() - timedelta(days=period_days)
     df_period = net_df[net_df['date'] >= start_date].copy()
     
-    if len(df_period) < 0.8 * period_days: # 确保有足够的数据点
+    # 将最低数据天数检查与period_days解耦
+    if len(df_period) < MIN_DAYS:
         return None
         
     returns = df_period['net_value'].pct_change().dropna()
+    if len(returns) == 0:
+        return None
+
     total_return = (df_period['net_value'].iloc[-1] / df_period['net_value'].iloc[0]) - 1
-    annual_return = (1 + total_return) ** (365 / len(returns)) - 1
+    # 避免除以零
+    days_in_period = (df_period['date'].iloc[-1] - df_period['date'].iloc[0]).days
+    if days_in_period == 0:
+        return None
+        
+    annual_return = (1 + total_return) ** (365 / days_in_period) - 1
     annual_return *= 100
     volatility = returns.std() * np.sqrt(252) * 100
     sharpe = (annual_return - RISK_FREE_RATE) / volatility if volatility > 0 else 0
@@ -437,9 +446,9 @@ def process_fund(row, start_date_3yr, end_date, index_df, total_funds, idx):
     # 首先获取最长周期（3年）的数据
     net_df, latest_net_value, data_source = get_fund_net_values(code, start_date_3yr, end_date)
     
-    # 如果数据量连1年都不到，直接跳过
-    if net_df.empty or len(net_df) < TIME_PERIODS['1年'] * 0.8:
-        reasons.append(f"数据不足（{len(net_df)}天 < {int(TIME_PERIODS['1年'] * 0.8)}天）")
+    # 如果数据量连90天都不到，直接跳过
+    if net_df.empty or len(net_df) < MIN_DAYS:
+        reasons.append(f"数据不足（{len(net_df)}天 < {MIN_DAYS}天）")
         print(f"    × 未通过筛选。原因：{', '.join(reasons)}", flush=True)
         return None, {'基金代码': code, '筛选状态': '未通过', '失败原因': ' / '.join(reasons)}
 
@@ -449,6 +458,9 @@ def process_fund(row, start_date_3yr, end_date, index_df, total_funds, idx):
         metrics = calculate_metrics(net_df, days, index_df)
         if metrics:
             metrics_dict[period] = metrics
+        else:
+            reasons.append(f"数据不足（{len(net_df[net_df['date'] >= (datetime.now() - timedelta(days=days))])}天）无法计算{period}指标")
+
 
     # 如果1年期指标不满足筛选条件，则直接淘汰
     if '1年' not in metrics_dict or \
@@ -493,11 +505,12 @@ def process_fund(row, start_date_3yr, end_date, index_df, total_funds, idx):
     
     # 将每个周期的指标也加入到结果中
     for period, metrics in metrics_dict.items():
-        result[f'{period}年化收益率 (%)'] = metrics['annual_return']
-        result[f'{period}年化波动率 (%)'] = metrics['volatility']
-        result[f'{period}夏普比率'] = metrics['sharpe']
-        result[f'{period}贝塔系数'] = metrics['beta']
-        result[f'{period}最大回撤 (%)'] = metrics['max_drawdown']
+        if metrics:
+            result[f'{period}年化收益率 (%)'] = metrics['annual_return']
+            result[f'{period}年化波动率 (%)'] = metrics['volatility']
+            result[f'{period}夏普比率'] = metrics['sharpe']
+            result[f'{period}贝塔系数'] = metrics['beta']
+            result[f'{period}最大回撤 (%)'] = metrics['max_drawdown']
 
     print(f"    √ 通过筛选，评分: {final_score:.2f}", flush=True)
     return result, {'基金代码': code, '筛选状态': '通过', '综合评分': final_score, '处理耗时': round(time.time() - start_time, 2)}
@@ -564,7 +577,7 @@ def main():
             code = row['基金代码']
             name = row['基金名称']
             print(f"\n--- 基金 {name} ({code}) 持仓详情 ---", flush=True)
-            if row['行业分布']:
+            if '行业分布' in row and row['行业分布']:
                 industry_df = pd.DataFrame(row['行业分布'])
                 print(industry_df.to_string(index=False), flush=True)
                 print(f"    行业集中度（前三大行业占比）: {row['行业集中度 (%)']:.2f}%", flush=True)

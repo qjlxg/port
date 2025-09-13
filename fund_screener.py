@@ -297,7 +297,7 @@ def get_fund_holdings(code):
         url = f"http://fundf10.eastmoney.com/ccmx_{code}.html"
         
         driver.get(url)
-        time.sleep(5) # 适当等待页面加载，可根据需要调整
+        time.sleep(15) # 适当等待页面加载，可根据需要调整
         
         html_content = driver.page_source
         

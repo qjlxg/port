@@ -35,7 +35,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y chromium-browser chromium-chromedriver
-        # This will install a stable version of both the browser and the driver
+        sudo ln -s /usr/bin/chromedriver /usr/local/bin/chromedriver
 
     - name: Cache fund data
       uses: actions/cache@v4

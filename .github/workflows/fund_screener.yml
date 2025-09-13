@@ -29,18 +29,13 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then
-          pip install -r requirements.txt
-        else
-          pip install selenium webdriver-manager pandas requests beautifulsoup4 numpy yfinance lxml openpyxl akshare aiofiles aiohttp
-        fi
+        pip install -r requirements.txt
 
-    - name: Install Selenium webdrivers
+    - name: Install Google Chrome and ChromeDriver
       run: |
-        pip install webdriver-manager
-        # Note: webdriver-manager will handle the browser driver installation
-        # The browser itself (e.g., Chromium) is often pre-installed on GitHub-hosted runners
-        # or can be installed via apt-get if needed.
+        sudo apt-get update
+        sudo apt-get install -y chromium-browser chromium-chromedriver
+        # This will install a stable version of both the browser and the driver
 
     - name: Cache fund data
       uses: actions/cache@v4

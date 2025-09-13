@@ -289,7 +289,7 @@ def get_fund_holdings(code):
     options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
     options.add_argument(f'user-agent={random.choice(USER_AGENTS)}')
-    service = Service(executable_path="/usr/lib/chromium-browser/chromedriver")
+    service = Service(ChromeDriverManager().install())
     
     driver = None
     try:

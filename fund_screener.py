@@ -15,7 +15,12 @@ import os
 import pickle
 import warnings
 import traceback
-from playwright.sync_api import sync_playwright
+
+# Selenium 相关的导入
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
 # 忽略警告
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -276,52 +281,56 @@ def get_fund_holdings(code):
             return holdings
         except Exception:
             print(f"    调试: 缓存文件 {cache_file} 损坏，将重新获取。", flush=True)
-
-    print(f"    调试: 尝试使用 Playwright 获取 {code} 持仓数据。", flush=True)
     
+    print(f"    调试: 尝试使用 Selenium 获取 {code} 持仓数据。", flush=True)
+    
+    options = Options()
+    options.add_argument('--headless')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--no-sandbox')
+    options.add_argument(f'user-agent={random.choice(USER_AGENTS)}')
+    service = Service(ChromeDriverManager().install())
+    
+    driver = None
     try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            url = f"http://fundf10.eastmoney.com/ccmx_{code}.html"
+        driver = webdriver.Chrome(service=service, options=options)
+        url = f"http://fundf10.eastmoney.com/ccmx_{code}.html"
+        
+        driver.get(url)
+        time.sleep(5) # 适当等待页面加载，可根据需要调整
+        
+        html_content = driver.page_source
+        
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        holdings = []
+        # 查找包含股票持仓数据的表格
+        stock_table = soup.find('div', class_='boxitem').find('table')
+        
+        if stock_table:
+            # 跳过表头，从第二行开始遍历
+            for row in stock_table.find_all('tr')[1:]:
+                cells = row.find_all('td')
+                if len(cells) >= 4:
+                    holdings.append({
+                        'name': cells[1].text.strip(),
+                        'code': cells[2].text.strip(),
+                        'ratio': cells[3].text.strip().replace('%', '')
+                    })
             
-            page.goto(url, timeout=60000)
-            
-            # 等待表格的父容器加载完成，这里是boxitem
-            page.wait_for_selector('div.boxitem table', timeout=60000)
-            
-            html_content = page.content()
-            browser.close()
-            
-            soup = BeautifulSoup(html_content, 'html.parser')
-            # 使用更精确的find方法来定位表格
-            stock_table = soup.find('div', class_='boxitem').find('table')
-            
-            if stock_table:
-                holdings = []
-                # 跳过表头，从第二行开始遍历
-                for row in stock_table.find_all('tr')[1:]:
-                    cells = row.find_all('td')
-                    if len(cells) >= 4:
-                        holdings.append({
-                            'name': cells[1].text.strip(),
-                            'code': cells[2].text.strip(),
-                            'ratio': cells[3].text.strip().replace('%', '')
-                        })
-                
-                if holdings:
-                    print(f"    调试: 从 Playwright 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
-                    with open(cache_file, "wb") as f:
-                        pickle.dump(holdings, f)
-                    return holdings
-                else:
-                    print("    调试: Playwright 成功获取页面但未找到有效的表格行。", flush=True)
-                    return []
+            if holdings:
+                print(f"    调试: 从 Selenium 获取 {code} 持仓成功，{len(holdings)} 条记录。", flush=True)
+                with open(cache_file, "wb") as f:
+                    pickle.dump(holdings, f)
+                return holdings
             else:
-                print("    调试: Playwright 成功获取页面但未找到持仓表格。", flush=True)
+                print("    调试: Selenium 成功获取页面但未找到有效的表格行。", flush=True)
                 return []
+        else:
+            print("    调试: Selenium 成功获取页面但未找到持仓表格。", flush=True)
+            return []
     except Exception as e:
-        print(f"    调试: Playwright 请求或解析失败: {e}", flush=True)
+        print(f"    调试: Selenium 请求或解析失败: {e}", flush=True)
         traceback.print_exc()
 
     return []

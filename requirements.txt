@@ -1,8 +1,12 @@
-requests
+selenium
+webdriver-manager
 pandas
-numpy
-urllib3
+requests
 beautifulsoup4
+numpy
+lxml
+openpyxl
+akshare
+aiofiles
+aiohttp
 tqdm
-efinance
-playwright

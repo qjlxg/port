@@ -452,7 +452,7 @@ def process_fund(row, start_date, end_date, index_df, total_funds, idx):
     is_passed = (metrics['annual_return'] >= MIN_RETURN and
                  metrics['volatility'] <= MAX_VOLATILITY and
                  metrics['sharpe'] >= MIN_SHARPE and
-                 fee <= MAX_FEE)and
+                 fee <= MAX_FEE and
                  metrics['max_drawdown'] >= MAX_DRAWDOWN)
 
     debug_info.update({

@@ -28,6 +28,7 @@ MAX_FEE = 2.5  # 管理费 ≤ 2.5%
 RISK_FREE_RATE = 3.0  # 无风险利率 3%
 MIN_DAYS = 120  # 最低数据天数
 TIMEOUT = 15  # 网络请求超时时间（秒）
+MAX_DRAWDOWN = -15.0  # 最大回撤 ≤ -15% （数字越小代表回撤越大）
 FUND_TYPE_FILTER = ['混合型', '股票型', '指数型']  # 基金类型筛选
 
 # 配置 requests 重试机制
@@ -451,7 +452,8 @@ def process_fund(row, start_date, end_date, index_df, total_funds, idx):
     is_passed = (metrics['annual_return'] >= MIN_RETURN and
                  metrics['volatility'] <= MAX_VOLATILITY and
                  metrics['sharpe'] >= MIN_SHARPE and
-                 fee <= MAX_FEE)
+                 fee <= MAX_FEE)and
+                 metrics['max_drawdown'] >= MAX_DRAWDOWN)
 
     debug_info.update({
         '年化收益率 (%)': metrics['annual_return'],
